@@ -604,7 +604,7 @@ function buildMalfunctioningPairRoleInfo(
  * Build info variables for the Chef.
  *
  * When functioning: considers Spy/Recluse alignment registration to compute
- * all achievable counts. When malfunctioning: any count 0..numPlayers.
+ * all achievable counts. When malfunctioning: any count 0..floor(numPlayers/2).
  */
 function buildChefInfo(
   zdd: ZDD,
@@ -619,8 +619,8 @@ function buildChefInfo(
 
   const malfunctioning = isSeatMalfunctioning(chefSeat, malfunctioningSeats);
 
-  // Create variables for all possible counts (0..numPlayers)
-  const maxCount = numPlayers;
+  // Create variables for all possible counts (0..floor(numPlayers/2))
+  const maxCount = Math.floor(numPlayers / 2);
   const variables: NightInfoVariable[] = [];
   const countOutputs = new Map<number, CountInfoOutput>();
   const allVarIds: number[] = [];
@@ -752,9 +752,7 @@ function buildFTMaximalVariables(
   let vid = nextVarId;
 
   for (let a = 0; a < numPlayers; a++) {
-    if (a === ftSeat) continue;
     for (let b = a + 1; b < numPlayers; b++) {
-      if (b === ftSeat) continue;
       for (const answer of ["Yes", "No"] as const) {
         variables.push({
           id: vid,
