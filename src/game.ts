@@ -155,9 +155,15 @@ export class Game {
    * all valid Storyteller information choices for that assignment.
    *
    * @param seatAssignment - Concrete mapping of seat index to role name.
+   * @param malfunctioningSeats - Optional set of seats that are always
+   *   malfunctioning (e.g., the Drunk). These seats receive unconstrained
+   *   info regardless of poisoner target.
    * @returns The night info ZDD root.
    */
-  buildNightInfo(seatAssignment: Map<Seat, string>): NodeId {
+  buildNightInfo(
+    seatAssignment: Map<Seat, string>,
+    malfunctioningSeats?: Set<Seat>,
+  ): NodeId {
     if (seatAssignment.size !== this.playerCount) {
       throw new Error(
         `Expected ${this.playerCount} seat assignments, got ${seatAssignment.size}`,
@@ -174,6 +180,7 @@ export class Game {
       seatRoles: seatAssignment,
       selectedRoles,
       script: this.script,
+      malfunctioningSeats,
     };
 
     const nightResult = buildNightInfoZDD(this.zdd, config);
