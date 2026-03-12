@@ -11,13 +11,13 @@ describe("Game", () => {
 
       expect(game.phaseCount).toBe(1);
       expect(game.currentPhase!.info.type).toBe(PhaseType.Distribution);
-      expect(game.countWorlds()).toBe(1144);
+      expect(game.countWorlds()).toBe(858);
     });
 
     it("builds distribution with Baron modifier", () => {
       const game = new Game(TROUBLE_BREWING, 5);
       game.buildDistribution(true);
-      expect(game.countWorlds()).toBe(1222);
+      expect(game.countWorlds()).toBe(1170);
     });
   });
 
@@ -144,7 +144,7 @@ describe("Game", () => {
       expect(popped!.type).toBe(PhaseType.SeatAssignment);
       expect(game.phaseCount).toBe(1);
       expect(game.currentPhase!.info.type).toBe(PhaseType.Distribution);
-      expect(game.countWorlds()).toBe(1144);
+      expect(game.countWorlds()).toBe(858);
     });
 
     it("undo on empty game returns undefined", () => {
@@ -174,7 +174,7 @@ describe("Game", () => {
 
       // Phase 1: build distribution
       game.buildDistribution();
-      expect(game.countWorlds()).toBe(1144);
+      expect(game.countWorlds()).toBe(858);
 
       // Pick a distribution that includes the Imp (demon)
       const dists = game.zdd.enumerate(game.currentRoot);

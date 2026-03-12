@@ -205,6 +205,15 @@ export function buildDistributionZDD(
     byType.get(script.roles[i].type)!.push(i);
   }
 
+  // Baron must be excluded from the base minion pool — distributions
+  // containing Baron are only valid with the outsider modifier applied,
+  // which is handled by buildDistributionZDDWithBaron.
+  const baronIdx = script.roles.findIndex((r) => r.name === "Baron");
+  if (baronIdx !== -1) {
+    const minions = byType.get(RoleType.Minion)!;
+    byType.set(RoleType.Minion, minions.filter((v) => v !== baronIdx));
+  }
+
   // Each group's vars are already in ascending order (by construction).
   const townsfolkZDD = chooseK(zdd, byType.get(RoleType.Townsfolk)!, dist.townsfolk);
   const outsiderZDD = chooseK(zdd, byType.get(RoleType.Outsider)!, dist.outsiders);
@@ -239,9 +248,12 @@ export function buildDistributionZDDWithBaron(
   if (baronIdx === -1) return base;
 
   const dist = baseDistribution(playerCount);
+  // Per official BotC rules, Baron adds +1 outsider / -1 townsfolk for
+  // games with fewer than 7 players, and +2 / -2 otherwise.
+  const baronMod = playerCount < 7 ? 1 : 2;
   const modifiedDist: Distribution = {
-    townsfolk: dist.townsfolk - 2,
-    outsiders: dist.outsiders + 2,
+    townsfolk: dist.townsfolk - baronMod,
+    outsiders: dist.outsiders + baronMod,
     minions: dist.minions,
     demons: dist.demons,
   };
