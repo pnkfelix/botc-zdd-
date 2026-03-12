@@ -60,6 +60,7 @@ export {
   findStarpassRecipientVariable,
   findEmpathN2Variable,
   findFortuneTellerN2Variable,
+  findUndertakerVariable,
   type NightActionConfig,
   type NightActionResult,
   type NightActionVariable,
@@ -69,5 +70,6 @@ export {
   type StarpassRecipientOutput,
   type EmpathN2Output,
   type FortuneTellerN2Output,
+  type UndertakerOutput,
 } from "./night-action.js";
-export { Game } from "./game.js";
+export { Game, type DayResult } from "./game.js";

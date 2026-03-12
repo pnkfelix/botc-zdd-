@@ -6,7 +6,7 @@
  * remaining worlds, and undoing phases.
  */
 
-import { ZDD, BOTTOM, type NodeId } from "./zdd.js";
+import { ZDD, BOTTOM, TOP, type NodeId } from "./zdd.js";
 import {
   type Script,
   type Observation,
@@ -33,6 +33,24 @@ import {
 } from "./night-action.js";
 
 // ---------------------------------------------------------------------------
+// Day phase types
+// ---------------------------------------------------------------------------
+
+/** Result of recording a Day phase. */
+export interface DayResult {
+  /** Which day this is (1-indexed: Day 1 follows Night 1). */
+  dayNumber: number;
+  /** The seat that was executed, or null if no execution. */
+  executedSeat: Seat | null;
+  /** The role of the executed player, or null if no execution. */
+  executedRole: string | null;
+  /** Seats that died during the day from other causes (Virgin trigger, Slayer). */
+  otherDeaths: Seat[];
+  /** Cumulative set of all dead seats after this day. */
+  deadSeats: Set<Seat>;
+}
+
+// ---------------------------------------------------------------------------
 // Phase snapshot (for undo)
 // ---------------------------------------------------------------------------
 
@@ -46,6 +64,10 @@ interface PhaseSnapshot {
   nightInfoResult?: NightInfoResult;
   /** Night action result metadata (only for NightAction phase). */
   nightActionResult?: NightActionResult;
+  /** Day result metadata (only for DayAction phase). */
+  dayResult?: DayResult;
+  /** Dead seats snapshot before this phase (for undo). */
+  previousDeadSeats?: Set<Seat>;
 }
 
 // ---------------------------------------------------------------------------
@@ -57,11 +79,22 @@ export class Game {
   readonly script: Script;
   readonly playerCount: number;
   private phases: PhaseSnapshot[] = [];
+  /** Cumulative set of all dead seats (from day executions, other day deaths, and observed night deaths). */
+  private _deadSeats: Set<Seat> = new Set();
+  /** Stored seat assignment for later use (e.g., Undertaker needs to look up executed player's role). */
+  private _seatAssignment: Map<Seat, string> | undefined;
+  /** Day results stored for later retrieval (e.g., Undertaker). */
+  private _dayResults: DayResult[] = [];
 
   constructor(script: Script, playerCount: number) {
     this.zdd = new ZDD();
     this.script = script;
     this.playerCount = playerCount;
+  }
+
+  /** Get the current set of dead seats. */
+  get deadSeats(): Set<Seat> {
+    return new Set(this._deadSeats);
   }
 
   /** The current (most recent) phase, or undefined if no phases yet. */
@@ -183,6 +216,9 @@ export class Game {
       throw new Error("No selected roles (build seat assignment first)");
     }
 
+    // Store seat assignment for later use (e.g., Undertaker role lookup)
+    this._seatAssignment = new Map(seatAssignment);
+
     const config: NightInfoConfig = {
       numPlayers: this.playerCount,
       seatRoles: seatAssignment,
@@ -244,6 +280,10 @@ export class Game {
       throw new Error("No selected roles (build seat assignment first)");
     }
 
+    // Get the executed role from the last Day phase (if any)
+    const lastDay = this._dayResults[this._dayResults.length - 1];
+    const executedRole = lastDay?.executedRole ?? null;
+
     const config: NightActionConfig = {
       numPlayers: this.playerCount,
       seatRoles: seatAssignment,
@@ -251,6 +291,8 @@ export class Game {
       script: this.script,
       malfunctioningSeats,
       redHerringSeat,
+      deadSeats: this._deadSeats.size > 0 ? new Set(this._deadSeats) : undefined,
+      executedRole,
     };
 
     const actionResult = buildNightActionZDD(this.zdd, config);
@@ -388,6 +430,106 @@ export class Game {
   }
 
   // -----------------------------------------------------------------------
+  // Day Phase
+  // -----------------------------------------------------------------------
+
+  /**
+   * Record a Day phase (execution and/or other deaths).
+   *
+   * This is a state transition, not a ZDD branching phase. The Day phase
+   * has zero ZDD variables — its root is TOP (trivial single-empty-set family).
+   *
+   * @param executedSeat - The seat that was executed, or null if no execution.
+   * @param otherDeaths - Other seats that died during the day (Virgin trigger, Slayer, etc.).
+   * @returns The DayResult.
+   */
+  recordDay(executedSeat: Seat | null, otherDeaths: Seat[] = []): DayResult {
+    // Validate executed seat is alive
+    if (executedSeat !== null && this._deadSeats.has(executedSeat)) {
+      throw new Error(`Seat ${executedSeat} is already dead and cannot be executed`);
+    }
+
+    // Validate other deaths are alive
+    for (const seat of otherDeaths) {
+      if (this._deadSeats.has(seat)) {
+        throw new Error(`Seat ${seat} is already dead (in otherDeaths)`);
+      }
+    }
+
+    // Snapshot the previous dead set for undo
+    const previousDeadSeats = new Set(this._deadSeats);
+
+    // Look up executed role
+    let executedRole: string | null = null;
+    if (executedSeat !== null) {
+      executedRole = this._seatAssignment?.get(executedSeat) ?? null;
+      this._deadSeats.add(executedSeat);
+    }
+
+    // Add other deaths
+    for (const seat of otherDeaths) {
+      this._deadSeats.add(seat);
+    }
+
+    // Compute day number from existing Day phases
+    const dayNumber = this._dayResults.length + 1;
+
+    const dayResult: DayResult = {
+      dayNumber,
+      executedSeat,
+      executedRole,
+      otherDeaths: [...otherDeaths],
+      deadSeats: new Set(this._deadSeats),
+    };
+
+    this._dayResults.push(dayResult);
+
+    // Push a phase with PhaseType.DayAction, zero ZDD variables, root = TOP
+    this.phases.push({
+      info: {
+        type: PhaseType.DayAction,
+        label: `Day ${dayNumber}`,
+        variableOffset: this.phases.reduce((sum, p) => sum + p.info.variableCount, 0),
+        variableCount: 0,
+      },
+      root: TOP,
+      dayResult,
+      previousDeadSeats,
+    });
+
+    return dayResult;
+  }
+
+  /**
+   * Record an observed night death (the ST sees who died overnight).
+   *
+   * This does NOT create a new phase — it's a state update to the cumulative
+   * dead set. Call after a Night action phase, before the next Day phase.
+   *
+   * @param seat - The seat that died during the preceding night.
+   */
+  recordNightDeath(seat: Seat): void {
+    if (this._deadSeats.has(seat)) {
+      throw new Error(`Seat ${seat} is already dead`);
+    }
+    this._deadSeats.add(seat);
+  }
+
+  /**
+   * Get the most recent DayResult, or undefined if no days recorded.
+   */
+  get lastDayResult(): DayResult | undefined {
+    return this._dayResults[this._dayResults.length - 1];
+  }
+
+  /**
+   * Get all DayResults recorded so far.
+   */
+  get dayResults(): DayResult[] {
+    return [...this._dayResults];
+  }
+
+  // -----------------------------------------------------------------------
   // Undo
   // -----------------------------------------------------------------------
 
@@ -397,6 +539,14 @@ export class Game {
    */
   undo(): PhaseInfo | undefined {
     const popped = this.phases.pop();
-    return popped?.info;
+    if (!popped) return undefined;
+
+    // If undoing a Day phase, restore the dead set
+    if (popped.info.type === PhaseType.DayAction && popped.previousDeadSeats) {
+      this._deadSeats = new Set(popped.previousDeadSeats);
+      this._dayResults.pop();
+    }
+
+    return popped.info;
   }
 }
