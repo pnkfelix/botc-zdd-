@@ -354,12 +354,37 @@ export class ZDD {
   /**
    * Require variable: keep only the sets that contain `v` (but keep `v`
    * in the sets, unlike onset).
+   *
+   * Unlike the naive onset+wrap approach, this properly walks the tree
+   * to preserve variable ordering when v is not the root variable.
    */
   require(f: NodeId, v: number): NodeId {
-    const sub = this.onset(f, v);
-    if (sub === BOTTOM) return BOTTOM;
-    // Re-add v to every set
-    return this.getNode(v, BOTTOM, sub);
+    if (f === BOTTOM) return BOTTOM;
+    if (f === TOP) return BOTTOM; // empty set doesn't contain v
+
+    const ck = this.cacheKey("RQ", f, v);
+    const cached = this.opCache.get(ck);
+    if (cached !== undefined) return cached;
+
+    const fv = this.varOf(f);
+    let result: NodeId;
+
+    if (fv > v) {
+      // v doesn't appear in any set below this node
+      result = BOTTOM;
+    } else if (fv === v) {
+      // At v's level: take only the hi branch (sets containing v)
+      const hi = this.hiOf(f);
+      result = hi === BOTTOM ? BOTTOM : this.getNode(v, BOTTOM, hi);
+    } else {
+      // fv < v: recurse on both branches, preserving the tree structure
+      const lo = this.require(this.loOf(f), v);
+      const hi = this.require(this.hiOf(f), v);
+      result = this.getNode(fv, lo, hi);
+    }
+
+    this.opCache.set(ck, result);
+    return result;
   }
 
   /**
