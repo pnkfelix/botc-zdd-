@@ -1346,8 +1346,9 @@ describe("Fortune Teller", () => {
     const zdd = new ZDD();
     const result = buildNightInfoZDD(zdd, makeConfig(seatRoles));
 
-    // Red herring: all seats except Demon(4) → seats 0,1,2,3 → 4 vars
-    expect(result.redHerringOutputs.size).toBe(4);
+    // Red herring: seats that can register as Good and are not Demon
+    // Eligible: 0(FT=good), 1(Chef=good), 2(Empath=good). NOT 3(SW=evil) or 4(Imp=Demon)
+    expect(result.redHerringOutputs.size).toBe(3);
 
     // FT outputs: C(4,2) pairs × 2 answers = 6 × 2 = 12
     expect(result.fortuneTellerOutputs.size).toBe(12);
@@ -1404,13 +1405,14 @@ describe("Fortune Teller", () => {
     const zdd = new ZDD();
     const result = buildNightInfoZDD(zdd, makeConfig(seatRoles));
 
-    // Require red herring on seat 3 (SW)
-    const rhVar = findRedHerringVariable(result, 3)!;
+    // Require red herring on seat 0 (FT itself — eligible per rules)
+    const rhVar = findRedHerringVariable(result, 0)!;
+    expect(rhVar).toBeDefined();
     const constrained = zdd.require(result.root, rhVar);
 
-    // Pair (1, 2): neither is Demon(4) nor red herring(3) → No
-    const yesVar = findFortuneTellerVariable(result, 1, 2, "Yes")!;
-    const noVar = findFortuneTellerVariable(result, 1, 2, "No")!;
+    // Pair (2, 3): neither is Demon(4) nor red herring(0) → No
+    const yesVar = findFortuneTellerVariable(result, 2, 3, "Yes")!;
+    const noVar = findFortuneTellerVariable(result, 2, 3, "No")!;
 
     expect(zdd.count(zdd.require(constrained, yesVar))).toBe(0);
     expect(zdd.count(zdd.require(constrained, noVar))).toBeGreaterThan(0);
@@ -1436,7 +1438,7 @@ describe("Fortune Teller", () => {
 
   it("FT world count with specific red herring", () => {
     // 5-player: 0=FT, 1=Chef, 2=Empath, 3=SW, 4=Imp
-    // Red herring candidates: 0,1,2,3 (not seat 4=Imp=Demon)
+    // Red herring candidates: 0,1,2 (not SW(3) or Imp(4))
     // For a specific red herring at seat 1:
     //   Pinging seats: Imp(4) and red herring(1)
     //   Pairs with at least one pinging: (1,2), (1,3), (1,4), (2,4), (3,4) → 5 Yes
@@ -1459,34 +1461,34 @@ describe("Fortune Teller", () => {
     // 5-player: 0=FT, 1=Chef, 2=Empath, 3=SW, 4=Imp
     // C(4,2)=6 pairs. For each red herring candidate, each pair has exactly 1 valid answer.
     // So each RH branch has 6 FT choices.
-    // RH candidates: 4 (seats 0,1,2,3)
-    // Chef: 1 count × Empath: 1 count × (4 RH × 6 FT) = 24
+    // RH candidates: 3 (seats 0,1,2 — SW(3) can't register Good, Imp(4) is Demon)
+    // Chef: 1 count × Empath: 1 count × (3 RH × 6 FT) = 18
     const seatRoles = makeSeatRoles(
       "Fortune Teller", "Chef", "Empath", "Scarlet Woman", "Imp",
     );
     const zdd = new ZDD();
     const result = buildNightInfoZDD(zdd, makeConfig(seatRoles));
 
-    expect(zdd.count(result.root)).toBe(24);
+    expect(zdd.count(result.root)).toBe(18);
   });
 
   it("FT + Poisoner branching: total world count", () => {
     // 5-player: 0=FT, 1=Chef, 2=Empath, 3=Poisoner, 4=Imp
     // Poisoner targets: 0,1,2,4 (4 targets)
-    // RH candidates: 0,1,2,3 (4, not Demon=4)
+    // RH candidates: 0,1,2 (3 — Poisoner(3) can't register Good, Imp(4) is Demon)
     //
     // For each poisoner target:
     //   Non-FT roles constrained + FT branches per RH
     //
     // Target 0 (FT poisoned):
-    //   Chef(1) × Empath(1) × (4 RH × 12 FT unconstrained) = 48
+    //   Chef(1) × Empath(1) × (3 RH × 12 FT unconstrained) = 36
     // Target 1 (Chef poisoned):
-    //   Chef(6 counts) × Empath(1) × (4 RH × 6 FT constrained) = 144
+    //   Chef(6 counts) × Empath(1) × (3 RH × 6 FT constrained) = 108
     // Target 2 (Empath poisoned):
-    //   Chef(1) × Empath(3 counts) × (4 RH × 6 FT constrained) = 72
+    //   Chef(1) × Empath(3 counts) × (3 RH × 6 FT constrained) = 54
     // Target 4 (Imp poisoned):
-    //   Chef(1) × Empath(1) × (4 RH × 6 FT constrained) = 24
-    // Total = 48 + 144 + 72 + 24 = 288
+    //   Chef(1) × Empath(1) × (3 RH × 6 FT constrained) = 18
+    // Total = 36 + 108 + 54 + 18 = 216
     const seatRoles = makeSeatRoles(
       "Fortune Teller", "Chef", "Empath", "Poisoner", "Imp",
     );
@@ -1494,8 +1496,8 @@ describe("Fortune Teller", () => {
     const result = buildNightInfoZDD(zdd, makeConfig(seatRoles));
 
     expect(result.poisonerTargetOutputs.size).toBe(4);
-    expect(result.redHerringOutputs.size).toBe(4);
-    expect(zdd.count(result.root)).toBe(288);
+    expect(result.redHerringOutputs.size).toBe(3);
+    expect(zdd.count(result.root)).toBe(216);
   });
 });
 
@@ -1546,14 +1548,15 @@ describe("findRedHerringVariable", () => {
     const zdd = new ZDD();
     const result = buildNightInfoZDD(zdd, makeConfig(seatRoles));
 
-    // Eligible: seats 0,1,2,3 (not seat 4 = Demon)
-    for (const seat of [0, 1, 2, 3]) {
+    // Eligible: seats 0,1,2 (can register as Good). NOT 3(SW=evil) or 4(Demon)
+    for (const seat of [0, 1, 2]) {
       const varId = findRedHerringVariable(result, seat);
       expect(varId).toBeDefined();
       expect(result.redHerringOutputs.get(varId!)!.targetSeat).toBe(seat);
     }
 
-    // Demon seat is not eligible
+    // SW (evil, no registersAs) and Demon seat are not eligible
+    expect(findRedHerringVariable(result, 3)).toBeUndefined();
     expect(findRedHerringVariable(result, 4)).toBeUndefined();
   });
 });

@@ -395,6 +395,25 @@ function canPingAsDemon(
   return roleObj.registersAs?.roleTypes.includes(RoleType.Demon) === true;
 }
 
+/**
+ * Check if a seat is eligible to be the Fortune Teller's red herring.
+ *
+ * Per BotC rules the red herring cannot be the Demon and must be a player
+ * who CAN register as Good. Townsfolk and Outsiders are naturally good.
+ * Minions/Demons are naturally evil, but a role with
+ * registersAs.alignments including "Good" (e.g. the Spy) is also eligible.
+ */
+function canBeRedHerring(
+  seat: Seat,
+  demonSeat: Seat,
+  seatRoles: Map<Seat, string>,
+  script: Script,
+): boolean {
+  if (seat === demonSeat) return false;
+  const opts = getAlignmentOptions(seat, seatRoles, script);
+  return opts.canBeGood;
+}
+
 // ---------------------------------------------------------------------------
 // Internal result type for per-role builders
 // ---------------------------------------------------------------------------
@@ -1080,7 +1099,7 @@ function buildWithFTOnly(
   let vid = 0;
 
   for (let seat = 0; seat < numPlayers; seat++) {
-    if (seat === demonSeat) continue;
+    if (!canBeRedHerring(seat, demonSeat, config.seatRoles, config.script)) continue;
     rhVariables.push({
       id: vid,
       infoRole: "RedHerring",
@@ -1264,7 +1283,7 @@ function buildWithPoisonerAndFT(
   const rhVarIds: number[] = [];
 
   for (let seat = 0; seat < numPlayers; seat++) {
-    if (seat === demonSeat) continue;
+    if (!canBeRedHerring(seat, demonSeat, config.seatRoles, config.script)) continue;
     rhVariables.push({
       id: vid,
       infoRole: "RedHerring",
