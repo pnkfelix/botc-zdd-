@@ -51,4 +51,23 @@ export {
   type RedHerringOutput,
   type FortuneTellerOutput,
 } from "./night.js";
+export {
+  buildNightActionZDD,
+  applyNightActionObservation,
+  findPoisonerN2TargetVariable,
+  findMonkTargetVariable,
+  findImpTargetVariable,
+  findStarpassRecipientVariable,
+  findEmpathN2Variable,
+  findFortuneTellerN2Variable,
+  type NightActionConfig,
+  type NightActionResult,
+  type NightActionVariable,
+  type PoisonerN2TargetOutput,
+  type MonkTargetOutput,
+  type ImpTargetOutput,
+  type StarpassRecipientOutput,
+  type EmpathN2Output,
+  type FortuneTellerN2Output,
+} from "./night-action.js";
 export { Game } from "./game.js";

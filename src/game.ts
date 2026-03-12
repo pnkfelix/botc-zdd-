@@ -25,6 +25,12 @@ import {
   type NightInfoConfig,
   type NightInfoResult,
 } from "./night.js";
+import {
+  buildNightActionZDD,
+  applyNightActionObservation,
+  type NightActionConfig,
+  type NightActionResult,
+} from "./night-action.js";
 
 // ---------------------------------------------------------------------------
 // Phase snapshot (for undo)
@@ -38,6 +44,8 @@ interface PhaseSnapshot {
   selectedRoles?: string[];
   /** Night info result metadata (only for NightInfo phase). */
   nightInfoResult?: NightInfoResult;
+  /** Night action result metadata (only for NightAction phase). */
+  nightActionResult?: NightActionResult;
 }
 
 // ---------------------------------------------------------------------------
@@ -205,6 +213,68 @@ export class Game {
   }
 
   // -----------------------------------------------------------------------
+  // Phase 4: Night 2 Actions
+  // -----------------------------------------------------------------------
+
+  /**
+   * Advance to the Night 2 action phase.
+   *
+   * Takes a concrete seat-to-role mapping and builds a ZDD representing
+   * all valid Night 2 action choice combinations (Poisoner retarget,
+   * Monk protection, Imp kill, death state, Empath/FT re-query).
+   *
+   * @param seatAssignment - Concrete mapping of seat index to role name.
+   * @param malfunctioningSeats - Optional set of permanently malfunctioning seats.
+   * @param redHerringSeat - Red herring seat from Night 1 (if FT is in play).
+   * @returns The night action ZDD root.
+   */
+  buildNightAction(
+    seatAssignment: Map<Seat, string>,
+    malfunctioningSeats?: Set<Seat>,
+    redHerringSeat?: Seat,
+  ): NodeId {
+    if (seatAssignment.size !== this.playerCount) {
+      throw new Error(
+        `Expected ${this.playerCount} seat assignments, got ${seatAssignment.size}`,
+      );
+    }
+
+    const selectedRoles = this.selectedRoles;
+    if (!selectedRoles) {
+      throw new Error("No selected roles (build seat assignment first)");
+    }
+
+    const config: NightActionConfig = {
+      numPlayers: this.playerCount,
+      seatRoles: seatAssignment,
+      selectedRoles,
+      script: this.script,
+      malfunctioningSeats,
+      redHerringSeat,
+    };
+
+    const actionResult = buildNightActionZDD(this.zdd, config);
+
+    const variableOffset = this.phases.reduce(
+      (sum, p) => sum + p.info.variableCount,
+      0,
+    );
+
+    this.phases.push({
+      info: {
+        type: PhaseType.NightAction,
+        label: "Night 2 Actions",
+        variableOffset,
+        variableCount: actionResult.variableCount,
+      },
+      root: actionResult.root,
+      nightActionResult: actionResult,
+    });
+
+    return actionResult.root;
+  }
+
+  // -----------------------------------------------------------------------
   // Observations & Constraints
   // -----------------------------------------------------------------------
 
@@ -223,6 +293,8 @@ export class Game {
 
     if (phase.info.type === PhaseType.NightInfo) {
       phase.root = applyNightInfoObservation(this.zdd, phase.root, obs);
+    } else if (phase.info.type === PhaseType.NightAction) {
+      phase.root = applyNightActionObservation(this.zdd, phase.root, obs);
     } else {
       phase.root = applyObservation(this.zdd, phase.root, obs, this.playerCount);
     }
@@ -303,6 +375,16 @@ export class Game {
       (p) => p.info.type === PhaseType.NightInfo,
     );
     return nightPhase?.nightInfoResult;
+  }
+
+  /**
+   * Get the NightActionResult for the current night action phase.
+   */
+  get nightActionResult(): NightActionResult | undefined {
+    const actionPhase = this.phases.find(
+      (p) => p.info.type === PhaseType.NightAction,
+    );
+    return actionPhase?.nightActionResult;
   }
 
   // -----------------------------------------------------------------------
