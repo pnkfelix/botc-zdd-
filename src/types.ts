@@ -6,7 +6,7 @@
 // Re-export core role types from botc.ts (canonical source)
 // ---------------------------------------------------------------------------
 
-export { RoleType, type Role, type Script, type Distribution } from "./botc.js";
+export { RoleType, type Role, type DistributionModifier, type Script, type Distribution } from "./botc.js";
 
 // ---------------------------------------------------------------------------
 // Seat & variable encoding

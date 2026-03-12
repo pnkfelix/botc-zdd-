@@ -5,7 +5,7 @@ import {
   RoleType,
   baseDistribution,
   buildDistributionZDD,
-  buildDistributionZDDWithBaron,
+  buildDistributionZDDWithModifiers,
   resolveRoles,
 } from "../src/botc.js";
 
@@ -116,45 +116,45 @@ describe("buildDistributionZDD", () => {
   });
 });
 
-describe("buildDistributionZDDWithBaron", () => {
-  it("5 players with Baron: more distributions than base", () => {
+describe("buildDistributionZDDWithModifiers", () => {
+  it("5 players: more distributions than base when modifiers present", () => {
     const zdd = new ZDD();
     const base = buildDistributionZDD(zdd, TROUBLE_BREWING, 5);
-    const withBaron = buildDistributionZDDWithBaron(zdd, TROUBLE_BREWING, 5);
+    const withMods = buildDistributionZDDWithModifiers(zdd, TROUBLE_BREWING, 5);
 
     const baseCount = zdd.count(base);
-    const baronCount = zdd.count(withBaron);
-    expect(baronCount).toBeGreaterThan(baseCount);
+    const modsCount = zdd.count(withMods);
+    expect(modsCount).toBeGreaterThan(baseCount);
   });
 
-  it("5 players with Baron: base (858) + Baron-modified distributions", () => {
+  it("5 players: base (858) + modifier-role distributions", () => {
     const zdd = new ZDD();
-    const root = buildDistributionZDDWithBaron(zdd, TROUBLE_BREWING, 5);
+    const root = buildDistributionZDDWithModifiers(zdd, TROUBLE_BREWING, 5);
     // Baron modifier at <7p is +1/-1: 2T 1O 1M(Baron) 1D
     // C(13,2)*C(4,1)*C(3,0)*C(1,1) = 78*4*1*1 = 312
     // Total: 858 + 312 = 1170
     expect(zdd.count(root)).toBe(1170);
   });
 
-  it("7 players with Baron: base + Baron-modified", () => {
+  it("7 players: base + modifier-role distributions", () => {
     const zdd = new ZDD();
-    const root = buildDistributionZDDWithBaron(zdd, TROUBLE_BREWING, 7);
+    const root = buildDistributionZDDWithModifiers(zdd, TROUBLE_BREWING, 7);
     // Baron modifier at >=7p is +2/-2: 3T 2O 1M(Baron) 1D
     // C(13,3)*C(4,2)*C(3,0)*C(1,1) = 286*6*1*1 = 1716
     // Total: 3861 + 1716 = 5577
     expect(zdd.count(root)).toBe(5577);
   });
 
-  it("Baron-modified sets always include Baron", () => {
+  it("modifier-role sets always include the modifier role", () => {
     const zdd = new ZDD();
     const base = buildDistributionZDD(zdd, TROUBLE_BREWING, 5);
-    const withBaron = buildDistributionZDDWithBaron(zdd, TROUBLE_BREWING, 5);
-    const baronOnly = zdd.difference(withBaron, base);
+    const withMods = buildDistributionZDDWithModifiers(zdd, TROUBLE_BREWING, 5);
+    const modOnly = zdd.difference(withMods, base);
 
     const baronIdx = TROUBLE_BREWING.roles.findIndex(
       (r) => r.name === "Baron",
     );
-    const sets = zdd.enumerate(baronOnly);
+    const sets = zdd.enumerate(modOnly);
     for (const s of sets) {
       expect(s).toContain(baronIdx);
     }

@@ -14,7 +14,7 @@ describe("Game", () => {
       expect(game.countWorlds()).toBe(858);
     });
 
-    it("builds distribution with Baron modifier", () => {
+    it("builds distribution with modifiers", () => {
       const game = new Game(TROUBLE_BREWING, 5);
       game.buildDistribution(true);
       expect(game.countWorlds()).toBe(1170);
