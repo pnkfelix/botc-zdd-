@@ -33,4 +33,15 @@ export {
 } from "./types.js";
 export { buildSeatAssignmentZDD, resolveSeatAssignment } from "./seats.js";
 export { applyObservation, applyObservations, executeQuery } from "./constraints.js";
+export {
+  buildNightInfoZDD,
+  applyNightInfoObservation,
+  findPairInfoVariable,
+  findCountInfoVariable,
+  type NightInfoConfig,
+  type NightInfoResult,
+  type NightInfoVariable,
+  type PairInfoOutput,
+  type CountInfoOutput,
+} from "./night.js";
 export { Game } from "./game.js";
