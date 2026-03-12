@@ -5,7 +5,7 @@ import {
   RoleType,
   baseDistribution,
   buildDistributionZDD,
-  buildDistributionZDDWithBaron,
+  buildDistributionZDDWithModifiers,
   resolveRoles,
 } from "../src/botc.js";
 
@@ -61,36 +61,37 @@ describe("Trouble Brewing script", () => {
 });
 
 describe("buildDistributionZDD", () => {
-  // Expected counts for Trouble Brewing (base distribution, no modifiers):
+  // Expected counts for Trouble Brewing (base distribution, no modifiers).
+  // Baron is excluded from the minion pool (3 non-Baron minions remain):
   //   C(townsfolk, t) * C(outsiders, o) * C(minions, m) * C(demons, d)
   //
-  // 5p: C(13,3)*C(4,0)*C(4,1)*C(1,1) = 286*1*4*1 = 1144
-  // 6p: C(13,3)*C(4,1)*C(4,1)*C(1,1) = 286*4*4*1 = 4576
-  // 7p: C(13,5)*C(4,0)*C(4,1)*C(1,1) = 1287*1*4*1 = 5148
-  // 10p: C(13,7)*C(4,0)*C(4,2)*C(1,1) = 1716*1*6*1 = 10296
+  // 5p: C(13,3)*C(4,0)*C(3,1)*C(1,1) = 286*1*3*1 = 858
+  // 6p: C(13,3)*C(4,1)*C(3,1)*C(1,1) = 286*4*3*1 = 3432
+  // 7p: C(13,5)*C(4,0)*C(3,1)*C(1,1) = 1287*1*3*1 = 3861
+  // 10p: C(13,7)*C(4,0)*C(3,2)*C(1,1) = 1716*1*3*1 = 5148
 
-  it("5 players: 1144 distributions", () => {
+  it("5 players: 858 distributions", () => {
     const zdd = new ZDD();
     const root = buildDistributionZDD(zdd, TROUBLE_BREWING, 5);
-    expect(zdd.count(root)).toBe(1144);
+    expect(zdd.count(root)).toBe(858);
   });
 
-  it("6 players: 4576 distributions", () => {
+  it("6 players: 3432 distributions", () => {
     const zdd = new ZDD();
     const root = buildDistributionZDD(zdd, TROUBLE_BREWING, 6);
-    expect(zdd.count(root)).toBe(4576);
+    expect(zdd.count(root)).toBe(3432);
   });
 
-  it("7 players: 5148 distributions", () => {
+  it("7 players: 3861 distributions", () => {
     const zdd = new ZDD();
     const root = buildDistributionZDD(zdd, TROUBLE_BREWING, 7);
-    expect(zdd.count(root)).toBe(5148);
+    expect(zdd.count(root)).toBe(3861);
   });
 
-  it("10 players: 10296 distributions", () => {
+  it("10 players: 5148 distributions", () => {
     const zdd = new ZDD();
     const root = buildDistributionZDD(zdd, TROUBLE_BREWING, 10);
-    expect(zdd.count(root)).toBe(10296);
+    expect(zdd.count(root)).toBe(5148);
   });
 
   it("every enumerated set has the correct size", () => {
@@ -115,45 +116,45 @@ describe("buildDistributionZDD", () => {
   });
 });
 
-describe("buildDistributionZDDWithBaron", () => {
-  it("5 players with Baron: more distributions than base", () => {
+describe("buildDistributionZDDWithModifiers", () => {
+  it("5 players: more distributions than base when modifiers present", () => {
     const zdd = new ZDD();
     const base = buildDistributionZDD(zdd, TROUBLE_BREWING, 5);
-    const withBaron = buildDistributionZDDWithBaron(zdd, TROUBLE_BREWING, 5);
+    const withMods = buildDistributionZDDWithModifiers(zdd, TROUBLE_BREWING, 5);
 
     const baseCount = zdd.count(base);
-    const baronCount = zdd.count(withBaron);
-    expect(baronCount).toBeGreaterThan(baseCount);
+    const modsCount = zdd.count(withMods);
+    expect(modsCount).toBeGreaterThan(baseCount);
   });
 
-  it("5 players with Baron: base (1144) + Baron-modified distributions", () => {
+  it("5 players: base (858) + modifier-role distributions", () => {
     const zdd = new ZDD();
-    const root = buildDistributionZDDWithBaron(zdd, TROUBLE_BREWING, 5);
-    // Baron at 5p: 1T 2O 1M(Baron) 1D
-    // C(13,1)*C(4,2)*C(3,0)*C(1,1) = 13*6*1*1 = 78
-    // Total: 1144 + 78 = 1222
-    expect(zdd.count(root)).toBe(1222);
+    const root = buildDistributionZDDWithModifiers(zdd, TROUBLE_BREWING, 5);
+    // Baron modifier at <7p is +1/-1: 2T 1O 1M(Baron) 1D
+    // C(13,2)*C(4,1)*C(3,0)*C(1,1) = 78*4*1*1 = 312
+    // Total: 858 + 312 = 1170
+    expect(zdd.count(root)).toBe(1170);
   });
 
-  it("7 players with Baron: base + Baron-modified", () => {
+  it("7 players: base + modifier-role distributions", () => {
     const zdd = new ZDD();
-    const root = buildDistributionZDDWithBaron(zdd, TROUBLE_BREWING, 7);
-    // Baron at 7p: 3T 2O 1M(Baron) 1D
+    const root = buildDistributionZDDWithModifiers(zdd, TROUBLE_BREWING, 7);
+    // Baron modifier at >=7p is +2/-2: 3T 2O 1M(Baron) 1D
     // C(13,3)*C(4,2)*C(3,0)*C(1,1) = 286*6*1*1 = 1716
-    // Total: 5148 + 1716 = 6864
-    expect(zdd.count(root)).toBe(6864);
+    // Total: 3861 + 1716 = 5577
+    expect(zdd.count(root)).toBe(5577);
   });
 
-  it("Baron-modified sets always include Baron", () => {
+  it("modifier-role sets always include the modifier role", () => {
     const zdd = new ZDD();
     const base = buildDistributionZDD(zdd, TROUBLE_BREWING, 5);
-    const withBaron = buildDistributionZDDWithBaron(zdd, TROUBLE_BREWING, 5);
-    const baronOnly = zdd.difference(withBaron, base);
+    const withMods = buildDistributionZDDWithModifiers(zdd, TROUBLE_BREWING, 5);
+    const modOnly = zdd.difference(withMods, base);
 
     const baronIdx = TROUBLE_BREWING.roles.findIndex(
       (r) => r.name === "Baron",
     );
-    const sets = zdd.enumerate(baronOnly);
+    const sets = zdd.enumerate(modOnly);
     for (const s of sets) {
       expect(s).toContain(baronIdx);
     }

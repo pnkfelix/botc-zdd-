@@ -2,12 +2,13 @@ export { ZDD, BOTTOM, TOP, type NodeId } from "./zdd.js";
 export {
   RoleType,
   type Role,
+  type DistributionModifier,
   type Script,
   type Distribution,
   TROUBLE_BREWING,
   baseDistribution,
   buildDistributionZDD,
-  buildDistributionZDDWithBaron,
+  buildDistributionZDDWithModifiers,
   resolveRoles,
 } from "./botc.js";
 export {

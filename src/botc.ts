@@ -19,9 +19,23 @@ export enum RoleType {
   Demon = "Demon",
 }
 
+/**
+ * Declares how a role modifies the base distribution when in play.
+ *
+ * `outsiderDelta` is the number of extra outsiders (townsfolk adjusts
+ * by the negative).  For games below `smallGameThreshold` players,
+ * `reducedOutsiderDelta` is used instead.
+ */
+export interface DistributionModifier {
+  outsiderDelta: number;
+  smallGameThreshold?: number;
+  reducedOutsiderDelta?: number;
+}
+
 export interface Role {
   name: string;
   type: RoleType;
+  distributionModifier?: DistributionModifier;
 }
 
 export interface Script {
@@ -105,7 +119,7 @@ export const TROUBLE_BREWING: Script = {
     { name: "Poisoner", type: RoleType.Minion },
     { name: "Spy", type: RoleType.Minion },
     { name: "Scarlet Woman", type: RoleType.Minion },
-    { name: "Baron", type: RoleType.Minion },
+    { name: "Baron", type: RoleType.Minion, distributionModifier: { outsiderDelta: 2, smallGameThreshold: 7, reducedOutsiderDelta: 1 } },
     // Demons (1)
     { name: "Imp", type: RoleType.Demon },
   ],
@@ -186,9 +200,8 @@ function chooseK(zdd: ZDD, vars: number[], k: number): NodeId {
  *  3. Take the cross-product of all four ZDDs (since role types are
  *     disjoint sets of variables, cross-product = all combinations).
  *
- * This does NOT yet handle distribution modifiers like Baron (+2
- * outsiders, -2 townsfolk). That can be added as additional
- * distribution variants unioned together.
+ * Roles with a distributionModifier are excluded from the base pool.
+ * Use buildDistributionZDDWithModifiers to include modifier variants.
  */
 export function buildDistributionZDD(
   zdd: ZDD,
@@ -203,6 +216,16 @@ export function buildDistributionZDD(
   }
   for (let i = 0; i < script.roles.length; i++) {
     byType.get(script.roles[i].type)!.push(i);
+  }
+
+  // Roles with distribution modifiers must be excluded from the base pool —
+  // they are only valid with the modified outsider/townsfolk counts applied,
+  // which is handled by buildDistributionZDDWithModifiers.
+  for (let i = 0; i < script.roles.length; i++) {
+    if (script.roles[i].distributionModifier) {
+      const typeList = byType.get(script.roles[i].type)!;
+      byType.set(script.roles[i].type, typeList.filter((v) => v !== i));
+    }
   }
 
   // Each group's vars are already in ascending order (by construction).
@@ -221,32 +244,31 @@ export function buildDistributionZDD(
 }
 
 /**
- * Build the ZDD of all valid distributions including Baron's modifier.
+ * Build the ZDD of all valid distributions, including variants for each
+ * role that declares a distributionModifier.
  *
- * When Baron is in the game, the distribution shifts: +2 outsiders, -2
- * townsfolk. We build the base distribution ZDD and union it with the
- * Baron-modified distribution ZDD.
+ * For each modifier role the distribution shifts by its effective delta
+ * (outsiders increase, townsfolk decrease). The modifier role is forced
+ * into every set it produces. The final result is the union of the base
+ * distribution with one variant per modifier role.
  */
-export function buildDistributionZDDWithBaron(
+export function buildDistributionZDDWithModifiers(
   zdd: ZDD,
   script: Script,
   playerCount: number,
 ): NodeId {
   const base = buildDistributionZDD(zdd, script, playerCount);
 
-  // Check if Baron exists in the script
-  const baronIdx = script.roles.findIndex((r) => r.name === "Baron");
-  if (baronIdx === -1) return base;
+  // Collect roles that have distribution modifiers
+  const modifierRoles: { idx: number; mod: DistributionModifier }[] = [];
+  for (let i = 0; i < script.roles.length; i++) {
+    const m = script.roles[i].distributionModifier;
+    if (m) modifierRoles.push({ idx: i, mod: m });
+  }
+  if (modifierRoles.length === 0) return base;
 
-  const dist = baseDistribution(playerCount);
-  const modifiedDist: Distribution = {
-    townsfolk: dist.townsfolk - 2,
-    outsiders: dist.outsiders + 2,
-    minions: dist.minions,
-    demons: dist.demons,
-  };
-
-  // Validate modified distribution is feasible
+  // Build the full byType map (including modifier roles — they are forced
+  // into their own variant, and excluded from each other's).
   const byType = new Map<RoleType, number[]>();
   for (const type of Object.values(RoleType)) {
     byType.set(type, []);
@@ -255,31 +277,64 @@ export function buildDistributionZDDWithBaron(
     byType.get(script.roles[i].type)!.push(i);
   }
 
-  if (
-    modifiedDist.townsfolk < 0 ||
-    modifiedDist.outsiders > byType.get(RoleType.Outsider)!.length
-  ) {
-    return base; // Can't apply Baron modifier at this player count
+  const dist = baseDistribution(playerCount);
+  let result = base;
+
+  for (const { idx, mod } of modifierRoles) {
+    // Compute effective delta for this player count
+    const delta =
+      mod.smallGameThreshold != null &&
+      mod.reducedOutsiderDelta != null &&
+      playerCount < mod.smallGameThreshold
+        ? mod.reducedOutsiderDelta
+        : mod.outsiderDelta;
+
+    const modifiedDist: Distribution = {
+      townsfolk: dist.townsfolk - delta,
+      outsiders: dist.outsiders + delta,
+      minions: dist.minions,
+      demons: dist.demons,
+    };
+
+    // Validate modified distribution is feasible
+    if (
+      modifiedDist.townsfolk < 0 ||
+      modifiedDist.outsiders > byType.get(RoleType.Outsider)!.length
+    ) {
+      continue; // Can't apply this modifier at this player count
+    }
+
+    // Build modified distribution: the modifier role must be included.
+    // Choose the remaining same-type roles from the pool minus this role.
+    const roleType = script.roles[idx].type;
+    const sameTypeVars = byType.get(roleType)!;
+    const otherSameType = sameTypeVars.filter((v) => v !== idx);
+
+    const typeCount = roleType === RoleType.Minion ? modifiedDist.minions
+                    : roleType === RoleType.Outsider ? modifiedDist.outsiders
+                    : roleType === RoleType.Townsfolk ? modifiedDist.townsfolk
+                    : modifiedDist.demons;
+
+    const forcedSingle = zdd.singleSet([idx]);
+    const otherSameTypeZDD = chooseK(zdd, otherSameType, typeCount - 1);
+    const forcedTypeZDD = zdd.product(forcedSingle, otherSameTypeZDD);
+
+    // Build the other type ZDDs normally
+    let variant = forcedTypeZDD;
+    for (const type of Object.values(RoleType)) {
+      if (type === roleType) continue;
+      const count = type === RoleType.Townsfolk ? modifiedDist.townsfolk
+                  : type === RoleType.Outsider ? modifiedDist.outsiders
+                  : type === RoleType.Minion ? modifiedDist.minions
+                  : modifiedDist.demons;
+      const typeZDD = chooseK(zdd, byType.get(type)!, count);
+      variant = zdd.product(variant, typeZDD);
+    }
+
+    result = zdd.union(result, variant);
   }
 
-  // Build Baron-modified distribution: Baron must be included
-  const minionVars = byType.get(RoleType.Minion)!;
-  const otherMinions = minionVars.filter((v) => v !== baronIdx);
-
-  const townsfolkZDD = chooseK(zdd, byType.get(RoleType.Townsfolk)!, modifiedDist.townsfolk);
-  const outsiderZDD = chooseK(zdd, byType.get(RoleType.Outsider)!, modifiedDist.outsiders);
-  // Baron must be included; choose (minions - 1) from the remaining minions
-  const otherMinionZDD = chooseK(zdd, otherMinions, modifiedDist.minions - 1);
-  // Add Baron to every set in otherMinionZDD
-  const baronSingle = zdd.singleSet([baronIdx]);
-  const minionZDD = zdd.product(baronSingle, otherMinionZDD);
-  const demonZDD = chooseK(zdd, byType.get(RoleType.Demon)!, modifiedDist.demons);
-
-  let baronResult = zdd.product(townsfolkZDD, outsiderZDD);
-  baronResult = zdd.product(baronResult, minionZDD);
-  baronResult = zdd.product(baronResult, demonZDD);
-
-  return zdd.union(base, baronResult);
+  return result;
 }
 
 /**

@@ -15,7 +15,7 @@ import {
   PhaseType,
   type PhaseInfo,
 } from "./types.js";
-import { buildDistributionZDD, buildDistributionZDDWithBaron, resolveRoles } from "./botc.js";
+import { buildDistributionZDD, buildDistributionZDDWithModifiers, resolveRoles } from "./botc.js";
 import { buildSeatAssignmentZDD } from "./seats.js";
 import { applyObservation, applyObservations, executeQuery } from "./constraints.js";
 
@@ -74,12 +74,12 @@ export class Game {
   /**
    * Initialize the game with Phase 1 (role distribution).
    *
-   * @param includeBaron - If true, include Baron-modified distributions.
+   * @param includeModifiers - If true, include modifier-role distribution variants.
    * @returns The distribution ZDD root.
    */
-  buildDistribution(includeBaron = false): NodeId {
-    const root = includeBaron
-      ? buildDistributionZDDWithBaron(this.zdd, this.script, this.playerCount)
+  buildDistribution(includeModifiers = false): NodeId {
+    const root = includeModifiers
+      ? buildDistributionZDDWithModifiers(this.zdd, this.script, this.playerCount)
       : buildDistributionZDD(this.zdd, this.script, this.playerCount);
 
     this.phases.push({
