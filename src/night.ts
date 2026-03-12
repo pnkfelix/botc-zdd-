@@ -6,27 +6,34 @@
  * (which players to show the Washerwoman, etc.) and the ZDD encodes all
  * valid choices consistent with the game state.
  *
- * Five Night 1 info roles are modeled:
+ * Six Night 1 info roles are modeled:
  * - Washerwoman: "Player A or Player B is the [Townsfolk]"
  * - Librarian: "Player A or Player B is the [Outsider]" (or "No Outsiders")
  * - Investigator: "Player A or Player B is the [Minion]"
  * - Chef: Number of adjacent evil pairs
  * - Empath: Number of evil living neighbors
+ * - Fortune Teller: "Yes" or "No" — is one of two chosen players the Demon?
+ *
+ * Spy/Recluse registration: roles with `registersAs` metadata can register
+ * as different role types and/or alignments to info roles. The Spy can
+ * register as Townsfolk/Outsider/Minion and Good/Evil. The Recluse can
+ * register as Outsider/Minion/Demon and Good/Evil.
  *
  * When the Poisoner is in play, poisoner target variables are added before
  * info role variables. The valid info outputs DEPEND on which seat is
- * poisoned: a poisoned info role gets unconstrained outputs (any valid
- * output for its type). Separate ZDD branches are built for each poisoner
- * target and unioned together.
+ * poisoned.
+ *
+ * When the Fortune Teller is in play, red herring designation variables are
+ * added. The FT's outputs depend on which player is the red herring, creating
+ * additional branching layered on top of Poisoner branching.
  *
  * The `malfunctioningSeats` config option supports the Drunk and similar
- * permanently-malfunctioning roles. Seats in this set are always treated
- * as malfunctioning regardless of poisoner target.
+ * permanently-malfunctioning roles.
  */
 
 import { ZDD, BOTTOM, TOP, type NodeId } from "./zdd.js";
 import { type Seat, type Observation } from "./types.js";
-import { RoleType, type Script } from "./botc.js";
+import { RoleType, type Script, type Role } from "./botc.js";
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -80,6 +87,18 @@ export interface PoisonerTargetOutput {
   targetSeat: Seat;
 }
 
+/** Describes a red herring designation variable. */
+export interface RedHerringOutput {
+  targetSeat: Seat;
+}
+
+/** Describes a Fortune Teller output variable. */
+export interface FortuneTellerOutput {
+  playerA: Seat;
+  playerB: Seat;
+  answer: "Yes" | "No";
+}
+
 // ---------------------------------------------------------------------------
 // Result
 // ---------------------------------------------------------------------------
@@ -91,7 +110,7 @@ export interface NightInfoResult {
   variableCount: number;
   /** Descriptors for each variable. */
   variables: NightInfoVariable[];
-  /** Variable ID ranges per info role (and "Poisoner" for target vars). */
+  /** Variable ID ranges per info role (and "Poisoner"/"RedHerring" for special vars). */
   roleVariableRanges: Map<string, { start: number; count: number }>;
   /** For pair-based roles: variable ID → output. */
   pairOutputs: Map<number, PairInfoOutput>;
@@ -99,10 +118,14 @@ export interface NightInfoResult {
   countOutputs: Map<number, CountInfoOutput>;
   /** For poisoner target variables: variable ID → target. */
   poisonerTargetOutputs: Map<number, PoisonerTargetOutput>;
+  /** For red herring designation variables: variable ID → target. */
+  redHerringOutputs: Map<number, RedHerringOutput>;
+  /** For Fortune Teller output variables: variable ID → output. */
+  fortuneTellerOutputs: Map<number, FortuneTellerOutput>;
 }
 
 // ---------------------------------------------------------------------------
-// Night 1 info role processing order
+// Night 1 info role processing order (non-FT roles)
 // ---------------------------------------------------------------------------
 
 const NIGHT_1_INFO_ROLES: Array<{
@@ -160,6 +183,13 @@ function getRoleType(
   return script.roles.find((r) => r.name === roleName)?.type;
 }
 
+function getRoleObj(
+  roleName: string,
+  script: Script,
+): Role | undefined {
+  return script.roles.find((r) => r.name === roleName);
+}
+
 function isEvil(
   seat: Seat,
   seatRoles: Map<Seat, string>,
@@ -174,6 +204,195 @@ function isEvil(
 /** Get all role names of a given type from the script. */
 function getRolesOfType(script: Script, type: RoleType): string[] {
   return script.roles.filter((r) => r.type === type).map((r) => r.name);
+}
+
+// ---------------------------------------------------------------------------
+// Registration helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Find valid reference targets for a pair-based info role, accounting for
+ * Spy/Recluse registration. Returns each valid seat with the set of role
+ * names the ST can show for that seat.
+ */
+function findPairTargets(
+  config: NightInfoConfig,
+  infoSeat: Seat,
+  targetType: RoleType,
+): Array<{ seat: Seat; roleNames: string[] }> {
+  const { seatRoles, script } = config;
+  const allRolesOfType = getRolesOfType(script, targetType);
+  const result: Array<{ seat: Seat; roleNames: string[] }> = [];
+
+  for (const [seat, role] of seatRoles) {
+    if (seat === infoSeat) continue;
+    const roleObj = getRoleObj(role, script);
+    if (!roleObj) continue;
+
+    const roleNames = new Set<string>();
+
+    // Actual role type match → can show actual role name
+    if (roleObj.type === targetType) {
+      roleNames.add(role);
+    }
+
+    // Registration capability → can show ANY role of the target type
+    if (roleObj.registersAs?.roleTypes.includes(targetType)) {
+      for (const r of allRolesOfType) {
+        roleNames.add(r);
+      }
+    }
+
+    if (roleNames.size > 0) {
+      result.push({ seat, roleNames: [...roleNames].sort() });
+    }
+  }
+
+  return result.sort((a, b) => a.seat - b.seat);
+}
+
+/**
+ * Get alignment registration options for a seat.
+ * Returns whether the seat can register as evil and/or good.
+ */
+function getAlignmentOptions(
+  seat: Seat,
+  seatRoles: Map<Seat, string>,
+  script: Script,
+): { canBeEvil: boolean; canBeGood: boolean } {
+  const role = seatRoles.get(seat);
+  if (!role) return { canBeEvil: false, canBeGood: false };
+  const roleObj = getRoleObj(role, script);
+  if (!roleObj) return { canBeEvil: false, canBeGood: false };
+
+  if (roleObj.registersAs) {
+    return {
+      canBeEvil: roleObj.registersAs.alignments.includes("Evil"),
+      canBeGood: roleObj.registersAs.alignments.includes("Good"),
+    };
+  }
+
+  const isNaturallyEvil = roleObj.type === RoleType.Minion || roleObj.type === RoleType.Demon;
+  return {
+    canBeEvil: isNaturallyEvil,
+    canBeGood: !isNaturallyEvil,
+  };
+}
+
+/**
+ * Compute all achievable Chef counts considering alignment registration.
+ * Returns a sorted array of distinct valid counts.
+ */
+function computeChefCounts(config: NightInfoConfig): number[] {
+  const { numPlayers, seatRoles, script } = config;
+
+  // Find seats with flexible alignment registration
+  const flexibleSeats: Seat[] = [];
+  for (const [seat] of seatRoles) {
+    const opts = getAlignmentOptions(seat, seatRoles, script);
+    if (opts.canBeEvil && opts.canBeGood) {
+      flexibleSeats.push(seat);
+    }
+  }
+
+  if (flexibleSeats.length === 0) {
+    // No flexible seats — single deterministic count
+    let pairCount = 0;
+    for (let s = 0; s < numPlayers; s++) {
+      const next = (s + 1) % numPlayers;
+      if (isEvil(s, seatRoles, script) && isEvil(next, seatRoles, script)) {
+        pairCount++;
+      }
+    }
+    return [pairCount];
+  }
+
+  // Enumerate all 2^K combinations of flexible seat registrations
+  const counts = new Set<number>();
+  const numFlex = flexibleSeats.length;
+
+  for (let mask = 0; mask < (1 << numFlex); mask++) {
+    const effectiveEvil = new Set<Seat>();
+
+    for (const [seat] of seatRoles) {
+      const flexIdx = flexibleSeats.indexOf(seat);
+      if (flexIdx >= 0) {
+        // Flexible: evil if bit is set
+        if (mask & (1 << flexIdx)) {
+          effectiveEvil.add(seat);
+        }
+      } else {
+        if (isEvil(seat, seatRoles, script)) {
+          effectiveEvil.add(seat);
+        }
+      }
+    }
+
+    let pairCount = 0;
+    for (let s = 0; s < numPlayers; s++) {
+      const next = (s + 1) % numPlayers;
+      if (effectiveEvil.has(s) && effectiveEvil.has(next)) {
+        pairCount++;
+      }
+    }
+    counts.add(pairCount);
+  }
+
+  return [...counts].sort((a, b) => a - b);
+}
+
+/**
+ * Compute all achievable Empath counts considering alignment registration.
+ * Returns a sorted array of distinct valid counts.
+ */
+function computeEmpathCounts(config: NightInfoConfig, empathSeat: Seat): number[] {
+  const { numPlayers, seatRoles, script } = config;
+
+  const left = (empathSeat - 1 + numPlayers) % numPlayers;
+  const right = (empathSeat + 1) % numPlayers;
+
+  const leftOpts = getAlignmentOptions(left, seatRoles, script);
+  const rightOpts = getAlignmentOptions(right, seatRoles, script);
+
+  const leftFlexible = leftOpts.canBeEvil && leftOpts.canBeGood;
+  const rightFlexible = rightOpts.canBeEvil && rightOpts.canBeGood;
+
+  if (!leftFlexible && !rightFlexible) {
+    let count = 0;
+    if (leftOpts.canBeEvil) count++;
+    if (rightOpts.canBeEvil) count++;
+    return [count];
+  }
+
+  const counts = new Set<number>();
+  const leftOptions = leftFlexible ? [false, true] : [leftOpts.canBeEvil];
+  const rightOptions = rightFlexible ? [false, true] : [rightOpts.canBeEvil];
+
+  for (const leftEvil of leftOptions) {
+    for (const rightEvil of rightOptions) {
+      let count = 0;
+      if (leftEvil) count++;
+      if (rightEvil) count++;
+      counts.add(count);
+    }
+  }
+
+  return [...counts].sort((a, b) => a - b);
+}
+
+/**
+ * Check if a seat can "ping" for the Fortune Teller (register as Demon).
+ */
+function canPingAsDemon(
+  seat: Seat,
+  seatRoles: Map<Seat, string>,
+  script: Script,
+): boolean {
+  const role = seatRoles.get(seat);
+  if (!role) return false;
+  const roleObj = getRoleObj(role, script);
+  if (!roleObj) return false;
+  return roleObj.registersAs?.roleTypes.includes(RoleType.Demon) === true;
 }
 
 // ---------------------------------------------------------------------------
@@ -203,14 +422,10 @@ function emptyResult(): RoleInfoResult {
 // ---------------------------------------------------------------------------
 
 /**
- * Build info variables for a pair-based role (Washerwoman, Librarian, Investigator).
+ * Build info variables for a pair-based role.
  *
- * When functioning: the Storyteller shows two players and names a role of the
- * target type. One of the shown players must actually have that role. Neither
- * shown player is the info role holder.
- *
- * When malfunctioning: the Storyteller can show any pair of other players and
- * name any role of the target type from the script (not just roles in play).
+ * When functioning: accounts for Spy/Recluse registration capabilities.
+ * When malfunctioning: any pair × any role of the target type from the script.
  */
 function buildPairRoleInfo(
   zdd: ZDD,
@@ -220,9 +435,7 @@ function buildPairRoleInfo(
   nextVarId: number,
   malfunctioningSeats: Set<Seat>,
 ): RoleInfoResult {
-  const { numPlayers, seatRoles, script } = config;
-
-  const infoSeat = findSeatByRole(seatRoles, infoRoleName);
+  const infoSeat = findSeatByRole(config.seatRoles, infoRoleName);
   if (infoSeat === undefined) return emptyResult();
 
   const malfunctioning = isSeatMalfunctioning(infoSeat, malfunctioningSeats);
@@ -233,18 +446,10 @@ function buildPairRoleInfo(
     );
   }
 
-  // --- Functioning path (original logic) ---
+  // --- Functioning path ---
+  const targets = findPairTargets(config, infoSeat, targetType);
 
-  // Find all roles of the target type in play, excluding the info role's own seat
-  const targets: Array<{ seat: Seat; roleName: string }> = [];
-  for (const [seat, role] of seatRoles) {
-    if (seat === infoSeat) continue;
-    if (getRoleType(role, script) === targetType) {
-      targets.push({ seat, roleName: role });
-    }
-  }
-
-  // Librarian special case: no outsiders in play
+  // Librarian special case: no valid targets at all
   if (targets.length === 0 && infoRoleName === "Librarian") {
     const vid = nextVarId;
     const variables: NightInfoVariable[] = [
@@ -266,30 +471,35 @@ function buildPairRoleInfo(
 
   if (targets.length === 0) return emptyResult();
 
+  const { numPlayers } = config;
   const variables: NightInfoVariable[] = [];
   const pairOutputs = new Map<number, PairInfoOutput>();
   const varIds: number[] = [];
   let vid = nextVarId;
 
-  // Sort targets by seat for deterministic variable ordering
-  const sortedTargets = [...targets].sort((a, b) => a.seat - b.seat);
+  // Use a Set to deduplicate (playerA, playerB, roleName) triples
+  const seen = new Set<string>();
 
-  for (const { seat: targetSeat, roleName } of sortedTargets) {
-    // Pair the true target with each possible decoy
-    for (let decoy = 0; decoy < numPlayers; decoy++) {
-      if (decoy === targetSeat || decoy === infoSeat) continue;
+  for (const { seat: targetSeat, roleNames } of targets) {
+    for (const roleName of roleNames) {
+      for (let decoy = 0; decoy < numPlayers; decoy++) {
+        if (decoy === targetSeat || decoy === infoSeat) continue;
 
-      const playerA = Math.min(targetSeat, decoy);
-      const playerB = Math.max(targetSeat, decoy);
+        const playerA = Math.min(targetSeat, decoy);
+        const playerB = Math.max(targetSeat, decoy);
+        const key = `${playerA},${playerB},${roleName}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
 
-      variables.push({
-        id: vid,
-        infoRole: infoRoleName,
-        description: `Players ${playerA},${playerB} — ${roleName}`,
-      });
-      pairOutputs.set(vid, { playerA, playerB, namedRole: roleName });
-      varIds.push(vid);
-      vid++;
+        variables.push({
+          id: vid,
+          infoRole: infoRoleName,
+          description: `Players ${playerA},${playerB} — ${roleName}`,
+        });
+        pairOutputs.set(vid, { playerA, playerB, namedRole: roleName });
+        varIds.push(vid);
+        vid++;
+      }
     }
   }
 
@@ -374,8 +584,8 @@ function buildMalfunctioningPairRoleInfo(
 /**
  * Build info variables for the Chef.
  *
- * When functioning: the Chef learns the true count of adjacent evil pairs.
- * When malfunctioning: the Chef can be told any count 0..numPlayers.
+ * When functioning: considers Spy/Recluse alignment registration to compute
+ * all achievable counts. When malfunctioning: any count 0..numPlayers.
  */
 function buildChefInfo(
   zdd: ZDD,
@@ -383,22 +593,12 @@ function buildChefInfo(
   nextVarId: number,
   malfunctioningSeats: Set<Seat>,
 ): RoleInfoResult {
-  const { numPlayers, seatRoles, script } = config;
+  const { numPlayers, seatRoles } = config;
 
   const chefSeat = findSeatByRole(seatRoles, "Chef");
   if (chefSeat === undefined) return emptyResult();
 
   const malfunctioning = isSeatMalfunctioning(chefSeat, malfunctioningSeats);
-
-  // Count adjacent evil pairs in the seating circle (needed even for
-  // variable creation since we always create all count variables)
-  let pairCount = 0;
-  for (let s = 0; s < numPlayers; s++) {
-    const next = (s + 1) % numPlayers;
-    if (isEvil(s, seatRoles, script) && isEvil(next, seatRoles, script)) {
-      pairCount++;
-    }
-  }
 
   // Create variables for all possible counts (0..numPlayers)
   const maxCount = numPlayers;
@@ -417,8 +617,14 @@ function buildChefInfo(
     allVarIds.push(vid);
   }
 
-  // When malfunctioning, any count is valid; when functioning, only the true count
-  const validVarIds = malfunctioning ? allVarIds : [nextVarId + pairCount];
+  let validVarIds: number[];
+  if (malfunctioning) {
+    validVarIds = allVarIds;
+  } else {
+    const validCounts = computeChefCounts(config);
+    validVarIds = validCounts.map((c) => nextVarId + c);
+  }
+
   const root = exactlyOne(zdd, validVarIds);
 
   return {
@@ -437,8 +643,8 @@ function buildChefInfo(
 /**
  * Build info variables for the Empath.
  *
- * When functioning: the Empath learns the true count of evil living neighbors.
- * When malfunctioning: the Empath can be told 0, 1, or 2.
+ * When functioning: considers Spy/Recluse alignment registration to compute
+ * all achievable counts. When malfunctioning: 0, 1, or 2.
  */
 function buildEmpathInfo(
   zdd: ZDD,
@@ -446,20 +652,12 @@ function buildEmpathInfo(
   nextVarId: number,
   malfunctioningSeats: Set<Seat>,
 ): RoleInfoResult {
-  const { numPlayers, seatRoles, script } = config;
+  const { seatRoles } = config;
 
   const empathSeat = findSeatByRole(seatRoles, "Empath");
   if (empathSeat === undefined) return emptyResult();
 
   const malfunctioning = isSeatMalfunctioning(empathSeat, malfunctioningSeats);
-
-  // On Night 1, all players are alive. Neighbors are adjacent seats.
-  const left = (empathSeat - 1 + numPlayers) % numPlayers;
-  const right = (empathSeat + 1) % numPlayers;
-
-  let evilCount = 0;
-  if (isEvil(left, seatRoles, script)) evilCount++;
-  if (isEvil(right, seatRoles, script)) evilCount++;
 
   // Variables for counts 0, 1, 2
   const variables: NightInfoVariable[] = [];
@@ -477,7 +675,14 @@ function buildEmpathInfo(
     allVarIds.push(vid);
   }
 
-  const validVarIds = malfunctioning ? allVarIds : [nextVarId + evilCount];
+  let validVarIds: number[];
+  if (malfunctioning) {
+    validVarIds = allVarIds;
+  } else {
+    const validCounts = computeEmpathCounts(config, empathSeat);
+    validVarIds = validCounts.map((c) => nextVarId + c);
+  }
+
   const root = exactlyOne(zdd, validVarIds);
 
   return {
@@ -490,12 +695,120 @@ function buildEmpathInfo(
 }
 
 // ---------------------------------------------------------------------------
-// Info role builder (dispatches to specific builders)
+// Fortune Teller output builder
+// ---------------------------------------------------------------------------
+
+interface FTInfoResult {
+  root: NodeId;
+  variables: NightInfoVariable[];
+  fortuneTellerOutputs: Map<number, FortuneTellerOutput>;
+  varCount: number;
+}
+
+function emptyFTResult(): FTInfoResult {
+  return {
+    root: TOP,
+    variables: [],
+    fortuneTellerOutputs: new Map(),
+    varCount: 0,
+  };
+}
+
+/**
+ * Build the maximal set of Fortune Teller output variables.
+ * All pairs × both answers (Yes/No).
+ */
+function buildFTMaximalVariables(
+  config: NightInfoConfig,
+  ftSeat: Seat,
+  nextVarId: number,
+): {
+  variables: NightInfoVariable[];
+  fortuneTellerOutputs: Map<number, FortuneTellerOutput>;
+  varCount: number;
+} {
+  const { numPlayers } = config;
+  const variables: NightInfoVariable[] = [];
+  const fortuneTellerOutputs = new Map<number, FortuneTellerOutput>();
+  let vid = nextVarId;
+
+  for (let a = 0; a < numPlayers; a++) {
+    if (a === ftSeat) continue;
+    for (let b = a + 1; b < numPlayers; b++) {
+      if (b === ftSeat) continue;
+      for (const answer of ["Yes", "No"] as const) {
+        variables.push({
+          id: vid,
+          infoRole: "Fortune Teller",
+          description: `FT picks ${a},${b} — ${answer}`,
+        });
+        fortuneTellerOutputs.set(vid, { playerA: a, playerB: b, answer });
+        vid++;
+      }
+    }
+  }
+
+  return {
+    variables,
+    fortuneTellerOutputs,
+    varCount: vid - nextVarId,
+  };
+}
+
+/**
+ * Build Fortune Teller ZDD for a specific red herring seat (functioning).
+ *
+ * For each pair (a, b), determine valid answers:
+ * - "mustPing": seat is Demon or red herring → always Yes
+ * - "canPing": seat has registersAs including Demon → Yes or No
+ * - otherwise → No
+ */
+function buildFTConstrained(
+  zdd: ZDD,
+  config: NightInfoConfig,
+  ftSeat: Seat,
+  demonSeat: Seat,
+  redHerringSeat: Seat,
+  ftMaximal: {
+    fortuneTellerOutputs: Map<number, FortuneTellerOutput>;
+    varCount: number;
+  },
+  ftVarStart: number,
+): NodeId {
+  const { seatRoles, script } = config;
+  const validVarIds: number[] = [];
+
+  for (let v = ftVarStart; v < ftVarStart + ftMaximal.varCount; v++) {
+    const output = ftMaximal.fortuneTellerOutputs.get(v);
+    if (!output) continue;
+
+    const aMustPing = output.playerA === demonSeat || output.playerA === redHerringSeat;
+    const bMustPing = output.playerB === demonSeat || output.playerB === redHerringSeat;
+    const aCanPing = !aMustPing && canPingAsDemon(output.playerA, seatRoles, script);
+    const bCanPing = !bMustPing && canPingAsDemon(output.playerB, seatRoles, script);
+
+    if (aMustPing || bMustPing) {
+      // At least one must ping → only Yes is valid
+      if (output.answer === "Yes") validVarIds.push(v);
+    } else if (aCanPing || bCanPing) {
+      // Neither must ping, but one can → both Yes and No are valid
+      validVarIds.push(v);
+    } else {
+      // Neither pings → only No is valid
+      if (output.answer === "No") validVarIds.push(v);
+    }
+  }
+
+  if (validVarIds.length === 0) return BOTTOM;
+  return exactlyOne(zdd, validVarIds);
+}
+
+// ---------------------------------------------------------------------------
+// Info role builder (dispatches to specific builders) — non-FT roles only
 // ---------------------------------------------------------------------------
 
 /**
- * Build all info role variables for a given set of malfunctioning seats.
- * Returns the combined ZDD and metadata, starting variable IDs at nextVarId.
+ * Build all non-FT info role variables for a given set of malfunctioning seats.
  */
 function buildAllInfoRoles(
   zdd: ZDD,
@@ -554,163 +867,12 @@ function buildAllInfoRoles(
 }
 
 // ---------------------------------------------------------------------------
-// Main builder
+// Constrained builder (for Poisoner branching)
 // ---------------------------------------------------------------------------
 
 /**
- * Build the Night 1 information ZDD for a concrete seat assignment.
- *
- * If the Poisoner is in play, adds poisoner target variables (one per
- * possible target seat) before info role variables. For each possible
- * poisoner target, builds the info role ZDD with that seat malfunctioning,
- * then unions all branches.
- *
- * If there is no Poisoner, this behaves like the original builder:
- * cross-product of independent info role choices.
- */
-export function buildNightInfoZDD(
-  zdd: ZDD,
-  config: NightInfoConfig,
-): NightInfoResult {
-  const { numPlayers, seatRoles } = config;
-  const baseMalfunctioning = config.malfunctioningSeats ?? new Set<Seat>();
-
-  // Check if Poisoner is in play
-  const poisonerSeat = findSeatByRole(seatRoles, "Poisoner");
-
-  if (poisonerSeat === undefined) {
-    // No Poisoner — build directly with base malfunctioning seats
-    return buildWithoutPoisoner(zdd, config, baseMalfunctioning);
-  }
-
-  // --- Poisoner is in play ---
-  return buildWithPoisoner(zdd, config, poisonerSeat, baseMalfunctioning);
-}
-
-/**
- * Build night info without a Poisoner (simple cross-product).
- */
-function buildWithoutPoisoner(
-  zdd: ZDD,
-  config: NightInfoConfig,
-  malfunctioningSeats: Set<Seat>,
-): NightInfoResult {
-  const infoResult = buildAllInfoRoles(zdd, config, 0, malfunctioningSeats);
-
-  return {
-    root: infoResult.root,
-    variableCount: infoResult.totalVarCount,
-    variables: infoResult.variables,
-    roleVariableRanges: infoResult.roleRanges,
-    pairOutputs: infoResult.pairOutputs,
-    countOutputs: infoResult.countOutputs,
-    poisonerTargetOutputs: new Map(),
-  };
-}
-
-/**
- * Build night info with a Poisoner. Creates poisoner target variables,
- * then for each target builds a separate info-role ZDD branch and unions
- * them together.
- *
- * Variable layout: [poisoner targets] [info role outputs]
- * The info role variables use the SAME variable IDs across all branches.
- */
-function buildWithPoisoner(
-  zdd: ZDD,
-  config: NightInfoConfig,
-  poisonerSeat: Seat,
-  baseMalfunctioning: Set<Seat>,
-): NightInfoResult {
-  const { numPlayers } = config;
-
-  // --- Step 1: Allocate poisoner target variables ---
-  const poisonerTargetOutputs = new Map<number, PoisonerTargetOutput>();
-  const poisonerVariables: NightInfoVariable[] = [];
-  const poisonerVarIds: number[] = [];
-
-  let vid = 0;
-  for (let target = 0; target < numPlayers; target++) {
-    if (target === poisonerSeat) continue;
-    poisonerVariables.push({
-      id: vid,
-      infoRole: "Poisoner",
-      description: `Poisoner targets seat ${target}`,
-    });
-    poisonerTargetOutputs.set(vid, { targetSeat: target });
-    poisonerVarIds.push(vid);
-    vid++;
-  }
-  const poisonerVarCount = vid;
-  const infoVarStart = poisonerVarCount;
-
-  // --- Step 2: Build one info-role branch per poisoner target ---
-  // We need all branches to use the SAME variable IDs for info roles.
-  // First, do a "template" build to determine the variable layout.
-  // Use base malfunctioning (no extra poisoning) to get the variable structure.
-  // All branches will share the same variable IDs.
-
-  // We need to ensure all branches produce the same variable set.
-  // The key insight: malfunctioning only changes which ZDD nodes are valid,
-  // not which variables exist. For pair roles, malfunctioning adds MORE
-  // variables (all possible outputs vs. only truthful ones). We need the
-  // union of all possible variables across all branches.
-  //
-  // Strategy: build with ALL seats malfunctioning to get the maximal variable
-  // set, then for each branch, build the ZDD over those same variables but
-  // constrained appropriately.
-
-  // Build the maximal variable set (all info roles malfunctioning)
-  const allSeats = new Set<Seat>();
-  for (let s = 0; s < numPlayers; s++) allSeats.add(s);
-  const maximalResult = buildAllInfoRoles(zdd, config, infoVarStart, allSeats);
-
-  // Now for each poisoner target, build the constrained info ZDD
-  let combinedRoot: NodeId = BOTTOM;
-
-  for (let targetIdx = 0; targetIdx < poisonerVarIds.length; targetIdx++) {
-    const targetVarId = poisonerVarIds[targetIdx];
-    const targetSeat = poisonerTargetOutputs.get(targetVarId)!.targetSeat;
-
-    // This branch's malfunctioning seats = base + the poisoner's target
-    const branchMalfunctioning = new Set(baseMalfunctioning);
-    branchMalfunctioning.add(targetSeat);
-
-    // Build info roles for this branch using the SAME variable IDs
-    const branchInfo = buildAllInfoRolesConstrained(
-      zdd, config, infoVarStart, branchMalfunctioning, maximalResult,
-    );
-
-    // Combine: poisoner target singleton × info role ZDD
-    const poisonerSingleton = zdd.singleSet([targetVarId]);
-    const branchZDD = zdd.product(poisonerSingleton, branchInfo);
-
-    combinedRoot = zdd.union(combinedRoot, branchZDD);
-  }
-
-  // --- Step 3: Assemble result ---
-  const allVariables = [...poisonerVariables, ...maximalResult.variables];
-  const roleRanges = new Map<string, { start: number; count: number }>();
-  roleRanges.set("Poisoner", { start: 0, count: poisonerVarCount });
-  for (const [role, range] of maximalResult.roleRanges) {
-    roleRanges.set(role, range);
-  }
-
-  return {
-    root: combinedRoot,
-    variableCount: poisonerVarCount + maximalResult.totalVarCount,
-    variables: allVariables,
-    roleVariableRanges: roleRanges,
-    pairOutputs: maximalResult.pairOutputs,
-    countOutputs: maximalResult.countOutputs,
-    poisonerTargetOutputs,
-  };
-}
-
-/**
  * Build info role ZDD for a specific branch, using the same variable layout
- * as the maximal result. For each info role, either use the maximal
- * (unconstrained) output or the functioning (truth-constrained) output.
+ * as the maximal result.
  */
 function buildAllInfoRolesConstrained(
   zdd: ZDD,
@@ -757,8 +919,7 @@ function buildAllInfoRolesConstrained(
 
 /**
  * Build a functioning (truth-constrained) ZDD for a role, using variables
- * from the maximal layout. Returns exactlyOne over only the truthful
- * variable IDs within the given range.
+ * from the maximal layout.
  */
 function buildFunctioningRoleConstrained(
   zdd: ZDD,
@@ -770,91 +931,437 @@ function buildFunctioningRoleConstrained(
     countOutputs: Map<number, CountInfoOutput>;
   },
 ): NodeId {
-  const { numPlayers, seatRoles, script } = config;
   const truthfulVarIds: number[] = [];
 
   if (roleSpec.kind === "pair") {
-    const infoSeat = findSeatByRole(seatRoles, roleSpec.name)!;
-
-    // Find truthful targets
-    const targets: Array<{ seat: Seat; roleName: string }> = [];
-    for (const [seat, role] of seatRoles) {
-      if (seat === infoSeat) continue;
-      if (getRoleType(role, script) === roleSpec.targetType) {
-        targets.push({ seat, roleName: role });
-      }
-    }
+    const infoSeat = findSeatByRole(config.seatRoles, roleSpec.name)!;
+    const targets = findPairTargets(config, infoSeat, roleSpec.targetType);
 
     if (targets.length === 0 && roleSpec.name === "Librarian") {
       // "No Outsiders" is the truthful output
-      // Find the "No Outsiders" variable in the maximal range
       for (let v = range.start; v < range.start + range.count; v++) {
         if (!maximalResult.pairOutputs.has(v)) {
-          // This is the "No Outsiders" variable
           truthfulVarIds.push(v);
           break;
         }
       }
     } else if (targets.length === 0) {
-      // No targets and not Librarian — shouldn't happen if role is in play
-      // but return BOTTOM to be safe
       return BOTTOM;
     } else {
       // Match truthful outputs against maximal variables
+      // Use a Set for fast lookup of valid (seat, roleName) combos
+      const validCombos = new Set<string>();
+      for (const { seat, roleNames } of targets) {
+        for (const rn of roleNames) {
+          validCombos.add(`${seat},${rn}`);
+        }
+      }
+
       for (let v = range.start; v < range.start + range.count; v++) {
         const output = maximalResult.pairOutputs.get(v);
         if (!output) continue;
 
-        // Check if this output is truthful: one of the shown players
-        // must actually have the named role
-        let isTruthful = false;
-        for (const { seat: targetSeat, roleName } of targets) {
-          if (output.namedRole === roleName &&
-            (output.playerA === targetSeat || output.playerB === targetSeat)) {
-            isTruthful = true;
-            break;
-          }
-        }
-        if (isTruthful) truthfulVarIds.push(v);
+        // Check if either shown player is a valid reference for the named role
+        const aValid = validCombos.has(`${output.playerA},${output.namedRole}`);
+        const bValid = validCombos.has(`${output.playerB},${output.namedRole}`);
+        if (aValid || bValid) truthfulVarIds.push(v);
       }
     }
   } else if (roleSpec.kind === "chef") {
-    // Compute true Chef count
-    let pairCount = 0;
-    for (let s = 0; s < numPlayers; s++) {
-      const next = (s + 1) % numPlayers;
-      if (isEvil(s, seatRoles, script) && isEvil(next, seatRoles, script)) {
-        pairCount++;
-      }
-    }
-    // Find the variable for the true count
+    const validCounts = computeChefCounts(config);
     for (let v = range.start; v < range.start + range.count; v++) {
       const output = maximalResult.countOutputs.get(v);
-      if (output && output.count === pairCount) {
+      if (output && validCounts.includes(output.count)) {
         truthfulVarIds.push(v);
-        break;
       }
     }
   } else {
     // Empath
-    const empathSeat = findSeatByRole(seatRoles, "Empath")!;
-    const left = (empathSeat - 1 + numPlayers) % numPlayers;
-    const right = (empathSeat + 1) % numPlayers;
-    let evilCount = 0;
-    if (isEvil(left, seatRoles, script)) evilCount++;
-    if (isEvil(right, seatRoles, script)) evilCount++;
-
+    const empathSeat = findSeatByRole(config.seatRoles, "Empath")!;
+    const validCounts = computeEmpathCounts(config, empathSeat);
     for (let v = range.start; v < range.start + range.count; v++) {
       const output = maximalResult.countOutputs.get(v);
-      if (output && output.count === evilCount) {
+      if (output && validCounts.includes(output.count)) {
         truthfulVarIds.push(v);
-        break;
       }
     }
   }
 
   if (truthfulVarIds.length === 0) return BOTTOM;
   return exactlyOne(zdd, truthfulVarIds);
+}
+
+// ---------------------------------------------------------------------------
+// Main builder
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the Night 1 information ZDD for a concrete seat assignment.
+ *
+ * Handles Poisoner branching, Fortune Teller red herring branching,
+ * and Spy/Recluse registration effects.
+ */
+export function buildNightInfoZDD(
+  zdd: ZDD,
+  config: NightInfoConfig,
+): NightInfoResult {
+  const { numPlayers, seatRoles } = config;
+  const baseMalfunctioning = config.malfunctioningSeats ?? new Set<Seat>();
+
+  const poisonerSeat = findSeatByRole(seatRoles, "Poisoner");
+  const ftSeat = findSeatByRole(seatRoles, "Fortune Teller");
+
+  // Find the Demon seat (for red herring eligibility)
+  let demonSeat: Seat | undefined;
+  for (const [seat, role] of seatRoles) {
+    if (getRoleType(role, config.script) === RoleType.Demon) {
+      demonSeat = seat;
+      break;
+    }
+  }
+
+  const hasPoisoner = poisonerSeat !== undefined;
+  const hasFT = ftSeat !== undefined && demonSeat !== undefined;
+
+  if (!hasPoisoner && !hasFT) {
+    return buildSimple(zdd, config, baseMalfunctioning);
+  }
+  if (!hasPoisoner && hasFT) {
+    return buildWithFTOnly(zdd, config, baseMalfunctioning, ftSeat!, demonSeat!);
+  }
+  if (hasPoisoner && !hasFT) {
+    return buildWithPoisonerOnly(zdd, config, poisonerSeat!, baseMalfunctioning);
+  }
+  // Both Poisoner and FT
+  return buildWithPoisonerAndFT(
+    zdd, config, poisonerSeat!, baseMalfunctioning, ftSeat!, demonSeat!,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Build paths
+// ---------------------------------------------------------------------------
+
+/** No Poisoner, no FT — simple cross-product. */
+function buildSimple(
+  zdd: ZDD,
+  config: NightInfoConfig,
+  malfunctioningSeats: Set<Seat>,
+): NightInfoResult {
+  const infoResult = buildAllInfoRoles(zdd, config, 0, malfunctioningSeats);
+
+  return {
+    root: infoResult.root,
+    variableCount: infoResult.totalVarCount,
+    variables: infoResult.variables,
+    roleVariableRanges: infoResult.roleRanges,
+    pairOutputs: infoResult.pairOutputs,
+    countOutputs: infoResult.countOutputs,
+    poisonerTargetOutputs: new Map(),
+    redHerringOutputs: new Map(),
+    fortuneTellerOutputs: new Map(),
+  };
+}
+
+/** FT in play, no Poisoner. Red herring branching only. */
+function buildWithFTOnly(
+  zdd: ZDD,
+  config: NightInfoConfig,
+  baseMalfunctioning: Set<Seat>,
+  ftSeat: Seat,
+  demonSeat: Seat,
+): NightInfoResult {
+  const { numPlayers } = config;
+
+  // --- Step 1: Allocate red herring designation variables ---
+  const redHerringOutputs = new Map<number, RedHerringOutput>();
+  const rhVariables: NightInfoVariable[] = [];
+  const rhVarIds: number[] = [];
+  let vid = 0;
+
+  for (let seat = 0; seat < numPlayers; seat++) {
+    if (seat === demonSeat) continue;
+    rhVariables.push({
+      id: vid,
+      infoRole: "RedHerring",
+      description: `Red herring: seat ${seat}`,
+    });
+    redHerringOutputs.set(vid, { targetSeat: seat });
+    rhVarIds.push(vid);
+    vid++;
+  }
+  const rhVarCount = vid;
+  const infoVarStart = rhVarCount;
+
+  // --- Step 2: Build non-FT info roles (independent of red herring) ---
+  const nonFTResult = buildAllInfoRoles(zdd, config, infoVarStart, baseMalfunctioning);
+  const ftVarStart = infoVarStart + nonFTResult.totalVarCount;
+
+  // --- Step 3: Build FT maximal variables ---
+  const ftMaximal = buildFTMaximalVariables(config, ftSeat, ftVarStart);
+  const ftMalfunctioning = isSeatMalfunctioning(ftSeat, baseMalfunctioning);
+
+  // --- Step 4: Build FT branches per red herring candidate ---
+  let ftRhCombined: NodeId = BOTTOM;
+
+  for (let rhIdx = 0; rhIdx < rhVarIds.length; rhIdx++) {
+    const rhVarId = rhVarIds[rhIdx];
+    const rhSeat = redHerringOutputs.get(rhVarId)!.targetSeat;
+
+    let ftRoot: NodeId;
+    if (ftMalfunctioning) {
+      // FT unconstrained: all vars valid
+      const allFTVarIds: number[] = [];
+      for (let v = ftVarStart; v < ftVarStart + ftMaximal.varCount; v++) {
+        allFTVarIds.push(v);
+      }
+      ftRoot = exactlyOne(zdd, allFTVarIds);
+    } else {
+      ftRoot = buildFTConstrained(
+        zdd, config, ftSeat, demonSeat, rhSeat, ftMaximal, ftVarStart,
+      );
+    }
+
+    const rhSingleton = zdd.singleSet([rhVarId]);
+    const branch = zdd.product(rhSingleton, ftRoot);
+    ftRhCombined = zdd.union(ftRhCombined, branch);
+  }
+
+  // --- Step 5: Combine non-FT × (RH + FT) ---
+  const combinedRoot = zdd.product(nonFTResult.root, ftRhCombined);
+
+  // --- Assemble result ---
+  const allVariables = [...rhVariables, ...nonFTResult.variables, ...ftMaximal.variables];
+  const roleRanges = new Map<string, { start: number; count: number }>();
+  roleRanges.set("RedHerring", { start: 0, count: rhVarCount });
+  for (const [role, range] of nonFTResult.roleRanges) {
+    roleRanges.set(role, range);
+  }
+  if (ftMaximal.varCount > 0) {
+    roleRanges.set("Fortune Teller", { start: ftVarStart, count: ftMaximal.varCount });
+  }
+
+  return {
+    root: combinedRoot,
+    variableCount: rhVarCount + nonFTResult.totalVarCount + ftMaximal.varCount,
+    variables: allVariables,
+    roleVariableRanges: roleRanges,
+    pairOutputs: nonFTResult.pairOutputs,
+    countOutputs: nonFTResult.countOutputs,
+    poisonerTargetOutputs: new Map(),
+    redHerringOutputs,
+    fortuneTellerOutputs: ftMaximal.fortuneTellerOutputs,
+  };
+}
+
+/** Poisoner in play, no FT. Poisoner branching only. */
+function buildWithPoisonerOnly(
+  zdd: ZDD,
+  config: NightInfoConfig,
+  poisonerSeat: Seat,
+  baseMalfunctioning: Set<Seat>,
+): NightInfoResult {
+  const { numPlayers } = config;
+
+  // --- Step 1: Allocate poisoner target variables ---
+  const poisonerTargetOutputs = new Map<number, PoisonerTargetOutput>();
+  const poisonerVariables: NightInfoVariable[] = [];
+  const poisonerVarIds: number[] = [];
+
+  let vid = 0;
+  for (let target = 0; target < numPlayers; target++) {
+    if (target === poisonerSeat) continue;
+    poisonerVariables.push({
+      id: vid,
+      infoRole: "Poisoner",
+      description: `Poisoner targets seat ${target}`,
+    });
+    poisonerTargetOutputs.set(vid, { targetSeat: target });
+    poisonerVarIds.push(vid);
+    vid++;
+  }
+  const poisonerVarCount = vid;
+  const infoVarStart = poisonerVarCount;
+
+  // --- Step 2: Build maximal (all malfunctioning) for variable layout ---
+  const allSeats = new Set<Seat>();
+  for (let s = 0; s < numPlayers; s++) allSeats.add(s);
+  const maximalResult = buildAllInfoRoles(zdd, config, infoVarStart, allSeats);
+
+  // --- Step 3: Per-poisoner-target branches ---
+  let combinedRoot: NodeId = BOTTOM;
+
+  for (let targetIdx = 0; targetIdx < poisonerVarIds.length; targetIdx++) {
+    const targetVarId = poisonerVarIds[targetIdx];
+    const targetSeat = poisonerTargetOutputs.get(targetVarId)!.targetSeat;
+
+    const branchMalfunctioning = new Set(baseMalfunctioning);
+    branchMalfunctioning.add(targetSeat);
+
+    const branchInfo = buildAllInfoRolesConstrained(
+      zdd, config, infoVarStart, branchMalfunctioning, maximalResult,
+    );
+
+    const poisonerSingleton = zdd.singleSet([targetVarId]);
+    const branchZDD = zdd.product(poisonerSingleton, branchInfo);
+    combinedRoot = zdd.union(combinedRoot, branchZDD);
+  }
+
+  // --- Assemble result ---
+  const allVariables = [...poisonerVariables, ...maximalResult.variables];
+  const roleRanges = new Map<string, { start: number; count: number }>();
+  roleRanges.set("Poisoner", { start: 0, count: poisonerVarCount });
+  for (const [role, range] of maximalResult.roleRanges) {
+    roleRanges.set(role, range);
+  }
+
+  return {
+    root: combinedRoot,
+    variableCount: poisonerVarCount + maximalResult.totalVarCount,
+    variables: allVariables,
+    roleVariableRanges: roleRanges,
+    pairOutputs: maximalResult.pairOutputs,
+    countOutputs: maximalResult.countOutputs,
+    poisonerTargetOutputs,
+    redHerringOutputs: new Map(),
+    fortuneTellerOutputs: new Map(),
+  };
+}
+
+/** Both Poisoner and FT in play. Nested branching. */
+function buildWithPoisonerAndFT(
+  zdd: ZDD,
+  config: NightInfoConfig,
+  poisonerSeat: Seat,
+  baseMalfunctioning: Set<Seat>,
+  ftSeat: Seat,
+  demonSeat: Seat,
+): NightInfoResult {
+  const { numPlayers } = config;
+
+  // --- Step 1: Allocate poisoner target variables ---
+  const poisonerTargetOutputs = new Map<number, PoisonerTargetOutput>();
+  const poisonerVariables: NightInfoVariable[] = [];
+  const poisonerVarIds: number[] = [];
+  let vid = 0;
+
+  for (let target = 0; target < numPlayers; target++) {
+    if (target === poisonerSeat) continue;
+    poisonerVariables.push({
+      id: vid,
+      infoRole: "Poisoner",
+      description: `Poisoner targets seat ${target}`,
+    });
+    poisonerTargetOutputs.set(vid, { targetSeat: target });
+    poisonerVarIds.push(vid);
+    vid++;
+  }
+  const poisonerVarCount = vid;
+
+  // --- Step 2: Allocate red herring designation variables ---
+  const redHerringOutputs = new Map<number, RedHerringOutput>();
+  const rhVariables: NightInfoVariable[] = [];
+  const rhVarIds: number[] = [];
+
+  for (let seat = 0; seat < numPlayers; seat++) {
+    if (seat === demonSeat) continue;
+    rhVariables.push({
+      id: vid,
+      infoRole: "RedHerring",
+      description: `Red herring: seat ${seat}`,
+    });
+    redHerringOutputs.set(vid, { targetSeat: seat });
+    rhVarIds.push(vid);
+    vid++;
+  }
+  const rhVarCount = rhVarIds.length;
+  const infoVarStart = vid;
+
+  // --- Step 3: Build maximal non-FT info roles ---
+  const allSeats = new Set<Seat>();
+  for (let s = 0; s < numPlayers; s++) allSeats.add(s);
+  const maximalNonFT = buildAllInfoRoles(zdd, config, infoVarStart, allSeats);
+  const ftVarStart = infoVarStart + maximalNonFT.totalVarCount;
+
+  // --- Step 4: Build FT maximal variables ---
+  const ftMaximal = buildFTMaximalVariables(config, ftSeat, ftVarStart);
+
+  // --- Step 5: Per-poisoner-target branches ---
+  let combinedRoot: NodeId = BOTTOM;
+
+  for (let targetIdx = 0; targetIdx < poisonerVarIds.length; targetIdx++) {
+    const targetVarId = poisonerVarIds[targetIdx];
+    const targetSeat = poisonerTargetOutputs.get(targetVarId)!.targetSeat;
+
+    const branchMalfunctioning = new Set(baseMalfunctioning);
+    branchMalfunctioning.add(targetSeat);
+
+    // Build non-FT info for this branch
+    const nonFTRoot = buildAllInfoRolesConstrained(
+      zdd, config, infoVarStart, branchMalfunctioning, maximalNonFT,
+    );
+
+    // Build FT + RH for this branch
+    const ftIsMalfunctioning = isSeatMalfunctioning(ftSeat, branchMalfunctioning);
+
+    let ftRhCombined: NodeId = BOTTOM;
+
+    for (let rhIdx = 0; rhIdx < rhVarIds.length; rhIdx++) {
+      const rhVarId = rhVarIds[rhIdx];
+      const rhSeat = redHerringOutputs.get(rhVarId)!.targetSeat;
+
+      let ftRoot: NodeId;
+      if (ftIsMalfunctioning) {
+        const allFTVarIds: number[] = [];
+        for (let v = ftVarStart; v < ftVarStart + ftMaximal.varCount; v++) {
+          allFTVarIds.push(v);
+        }
+        ftRoot = exactlyOne(zdd, allFTVarIds);
+      } else {
+        ftRoot = buildFTConstrained(
+          zdd, config, ftSeat, demonSeat, rhSeat, ftMaximal, ftVarStart,
+        );
+      }
+
+      const rhSingleton = zdd.singleSet([rhVarId]);
+      const branch = zdd.product(rhSingleton, ftRoot);
+      ftRhCombined = zdd.union(ftRhCombined, branch);
+    }
+
+    // Combine: poisoner × nonFT × (RH + FT)
+    const poisonerSingleton = zdd.singleSet([targetVarId]);
+    const branchZDD = zdd.product(poisonerSingleton, zdd.product(nonFTRoot, ftRhCombined));
+    combinedRoot = zdd.union(combinedRoot, branchZDD);
+  }
+
+  // --- Assemble result ---
+  const allVariables = [
+    ...poisonerVariables,
+    ...rhVariables,
+    ...maximalNonFT.variables,
+    ...ftMaximal.variables,
+  ];
+  const roleRanges = new Map<string, { start: number; count: number }>();
+  roleRanges.set("Poisoner", { start: 0, count: poisonerVarCount });
+  roleRanges.set("RedHerring", { start: poisonerVarCount, count: rhVarCount });
+  for (const [role, range] of maximalNonFT.roleRanges) {
+    roleRanges.set(role, range);
+  }
+  if (ftMaximal.varCount > 0) {
+    roleRanges.set("Fortune Teller", { start: ftVarStart, count: ftMaximal.varCount });
+  }
+
+  return {
+    root: combinedRoot,
+    variableCount: poisonerVarCount + rhVarCount + maximalNonFT.totalVarCount + ftMaximal.varCount,
+    variables: allVariables,
+    roleVariableRanges: roleRanges,
+    pairOutputs: maximalNonFT.pairOutputs,
+    countOutputs: maximalNonFT.countOutputs,
+    poisonerTargetOutputs,
+    redHerringOutputs,
+    fortuneTellerOutputs: ftMaximal.fortuneTellerOutputs,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -865,8 +1372,6 @@ function buildFunctioningRoleConstrained(
  * Apply an observation to a night info ZDD.
  *
  * Only `require-variable` and `exclude-variable` observations are supported.
- * Seat-specific observations (seat-has-role, etc.) are not meaningful in the
- * night info context.
  */
 export function applyNightInfoObservation(
   zdd: ZDD,
@@ -891,13 +1396,6 @@ export function applyNightInfoObservation(
 
 /**
  * Find the variable ID for a specific pair-based info output.
- *
- * @param result - The NightInfoResult from buildNightInfoZDD
- * @param infoRole - The info role name (e.g., "Washerwoman")
- * @param playerA - First shown player (order doesn't matter)
- * @param playerB - Second shown player (order doesn't matter)
- * @param namedRole - The role that was named
- * @returns The variable ID, or undefined if no such output exists
  */
 export function findPairInfoVariable(
   result: NightInfoResult,
@@ -928,11 +1426,6 @@ export function findPairInfoVariable(
 
 /**
  * Find the variable ID for a specific count-based info output.
- *
- * @param result - The NightInfoResult from buildNightInfoZDD
- * @param infoRole - The info role name (e.g., "Chef" or "Empath")
- * @param count - The count value
- * @returns The variable ID, or undefined if no such output exists
  */
 export function findCountInfoVariable(
   result: NightInfoResult,
@@ -956,10 +1449,6 @@ export function findCountInfoVariable(
 
 /**
  * Find the variable ID for a specific poisoner target.
- *
- * @param result - The NightInfoResult from buildNightInfoZDD
- * @param targetSeat - The seat the poisoner targets
- * @returns The variable ID, or undefined if no such target exists
  */
 export function findPoisonerTargetVariable(
   result: NightInfoResult,
@@ -967,6 +1456,50 @@ export function findPoisonerTargetVariable(
 ): number | undefined {
   for (const [varId, output] of result.poisonerTargetOutputs) {
     if (output.targetSeat === targetSeat) {
+      return varId;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Find the variable ID for a specific red herring designation.
+ */
+export function findRedHerringVariable(
+  result: NightInfoResult,
+  targetSeat: Seat,
+): number | undefined {
+  for (const [varId, output] of result.redHerringOutputs) {
+    if (output.targetSeat === targetSeat) {
+      return varId;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Find the variable ID for a specific Fortune Teller output.
+ */
+export function findFortuneTellerVariable(
+  result: NightInfoResult,
+  playerA: Seat,
+  playerB: Seat,
+  answer: "Yes" | "No",
+): number | undefined {
+  const range = result.roleVariableRanges.get("Fortune Teller");
+  if (!range) return undefined;
+
+  const a = Math.min(playerA, playerB);
+  const b = Math.max(playerA, playerB);
+
+  for (const [varId, output] of result.fortuneTellerOutputs) {
+    if (
+      varId >= range.start &&
+      varId < range.start + range.count &&
+      output.playerA === a &&
+      output.playerB === b &&
+      output.answer === answer
+    ) {
       return varId;
     }
   }

@@ -2,6 +2,7 @@ export { ZDD, BOTTOM, TOP, type NodeId } from "./zdd.js";
 export {
   RoleType,
   type Role,
+  type RegistrationCapability,
   type DistributionModifier,
   type Script,
   type Distribution,
@@ -39,11 +40,15 @@ export {
   findPairInfoVariable,
   findCountInfoVariable,
   findPoisonerTargetVariable,
+  findRedHerringVariable,
+  findFortuneTellerVariable,
   type NightInfoConfig,
   type NightInfoResult,
   type NightInfoVariable,
   type PairInfoOutput,
   type CountInfoOutput,
   type PoisonerTargetOutput,
+  type RedHerringOutput,
+  type FortuneTellerOutput,
 } from "./night.js";
 export { Game } from "./game.js";

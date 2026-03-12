@@ -32,10 +32,25 @@ export interface DistributionModifier {
   reducedOutsiderDelta?: number;
 }
 
+/**
+ * Registration capabilities for roles that can mis-register to info roles.
+ *
+ * `roleTypes` lists the role types the character can register as.
+ * `alignments` lists the alignments the character can register as.
+ *
+ * For example, the Spy (a Minion) can register as Townsfolk, Outsider, or
+ * Minion (NOT Demon), and as Good or Evil.
+ */
+export interface RegistrationCapability {
+  roleTypes: RoleType[];
+  alignments: Array<"Good" | "Evil">;
+}
+
 export interface Role {
   name: string;
   type: RoleType;
   distributionModifier?: DistributionModifier;
+  registersAs?: RegistrationCapability;
 }
 
 export interface Script {
@@ -113,11 +128,11 @@ export const TROUBLE_BREWING: Script = {
     // Outsiders (4)
     { name: "Butler", type: RoleType.Outsider },
     { name: "Drunk", type: RoleType.Outsider },
-    { name: "Recluse", type: RoleType.Outsider },
+    { name: "Recluse", type: RoleType.Outsider, registersAs: { roleTypes: [RoleType.Outsider, RoleType.Minion, RoleType.Demon], alignments: ["Good", "Evil"] } },
     { name: "Saint", type: RoleType.Outsider },
     // Minions (4)
     { name: "Poisoner", type: RoleType.Minion },
-    { name: "Spy", type: RoleType.Minion },
+    { name: "Spy", type: RoleType.Minion, registersAs: { roleTypes: [RoleType.Townsfolk, RoleType.Outsider, RoleType.Minion], alignments: ["Good", "Evil"] } },
     { name: "Scarlet Woman", type: RoleType.Minion },
     { name: "Baron", type: RoleType.Minion, distributionModifier: { outsiderDelta: 2, smallGameThreshold: 7, reducedOutsiderDelta: 1 } },
     // Demons (1)
