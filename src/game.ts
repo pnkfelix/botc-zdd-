@@ -12,12 +12,19 @@ import {
   type Observation,
   type Query,
   type QueryResult,
+  type Seat,
   PhaseType,
   type PhaseInfo,
 } from "./types.js";
 import { buildDistributionZDD, buildDistributionZDDWithModifiers, resolveRoles } from "./botc.js";
 import { buildSeatAssignmentZDD } from "./seats.js";
 import { applyObservation, applyObservations, executeQuery } from "./constraints.js";
+import {
+  buildNightInfoZDD,
+  applyNightInfoObservation,
+  type NightInfoConfig,
+  type NightInfoResult,
+} from "./night.js";
 
 // ---------------------------------------------------------------------------
 // Phase snapshot (for undo)
@@ -29,6 +36,8 @@ interface PhaseSnapshot {
   root: NodeId;
   /** The roles selected for seat assignment (only for SeatAssignment phase). */
   selectedRoles?: string[];
+  /** Night info result metadata (only for NightInfo phase). */
+  nightInfoResult?: NightInfoResult;
 }
 
 // ---------------------------------------------------------------------------
@@ -136,11 +145,67 @@ export class Game {
   }
 
   // -----------------------------------------------------------------------
+  // Phase 3: Night 1 Information
+  // -----------------------------------------------------------------------
+
+  /**
+   * Advance to the Night 1 information phase.
+   *
+   * Takes a concrete seat-to-role mapping and builds a ZDD representing
+   * all valid Storyteller information choices for that assignment.
+   *
+   * @param seatAssignment - Concrete mapping of seat index to role name.
+   * @returns The night info ZDD root.
+   */
+  buildNightInfo(seatAssignment: Map<Seat, string>): NodeId {
+    if (seatAssignment.size !== this.playerCount) {
+      throw new Error(
+        `Expected ${this.playerCount} seat assignments, got ${seatAssignment.size}`,
+      );
+    }
+
+    const selectedRoles = this.selectedRoles;
+    if (!selectedRoles) {
+      throw new Error("No selected roles (build seat assignment first)");
+    }
+
+    const config: NightInfoConfig = {
+      numPlayers: this.playerCount,
+      seatRoles: seatAssignment,
+      selectedRoles,
+      script: this.script,
+    };
+
+    const nightResult = buildNightInfoZDD(this.zdd, config);
+
+    const variableOffset = this.phases.reduce(
+      (sum, p) => sum + p.info.variableCount,
+      0,
+    );
+
+    this.phases.push({
+      info: {
+        type: PhaseType.NightInfo,
+        label: "Night 1 Information",
+        variableOffset,
+        variableCount: nightResult.variableCount,
+      },
+      root: nightResult.root,
+      nightInfoResult: nightResult,
+    });
+
+    return nightResult.root;
+  }
+
+  // -----------------------------------------------------------------------
   // Observations & Constraints
   // -----------------------------------------------------------------------
 
   /**
    * Apply an observation to the current phase's ZDD.
+   *
+   * For NightInfo phases, only `require-variable` and `exclude-variable`
+   * observations are supported.
    *
    * @param obs - The observation to apply.
    * @returns The new ZDD root after narrowing.
@@ -149,7 +214,11 @@ export class Game {
     const phase = this.currentPhase;
     if (!phase) throw new Error("No active phase");
 
-    phase.root = applyObservation(this.zdd, phase.root, obs, this.playerCount);
+    if (phase.info.type === PhaseType.NightInfo) {
+      phase.root = applyNightInfoObservation(this.zdd, phase.root, obs);
+    } else {
+      phase.root = applyObservation(this.zdd, phase.root, obs, this.playerCount);
+    }
     return phase.root;
   }
 
@@ -160,12 +229,10 @@ export class Game {
     const phase = this.currentPhase;
     if (!phase) throw new Error("No active phase");
 
-    phase.root = applyObservations(
-      this.zdd,
-      phase.root,
-      observations,
-      this.playerCount,
-    );
+    for (const obs of observations) {
+      this.applyObservation(obs);
+      if (phase.root === BOTTOM) return BOTTOM;
+    }
     return phase.root;
   }
 
@@ -219,6 +286,16 @@ export class Game {
       (p) => p.info.type === PhaseType.SeatAssignment,
     );
     return seatPhase?.selectedRoles;
+  }
+
+  /**
+   * Get the NightInfoResult for the current night info phase.
+   */
+  get nightInfoResult(): NightInfoResult | undefined {
+    const nightPhase = this.phases.find(
+      (p) => p.info.type === PhaseType.NightInfo,
+    );
+    return nightPhase?.nightInfoResult;
   }
 
   // -----------------------------------------------------------------------

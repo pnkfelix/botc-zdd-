@@ -44,6 +44,7 @@ export enum PhaseType {
   Distribution = "Distribution",
   SeatAssignment = "SeatAssignment",
   TokenAssignment = "TokenAssignment",
+  NightInfo = "NightInfo",
   NightAction = "NightAction",
   DayAction = "DayAction",
 }
