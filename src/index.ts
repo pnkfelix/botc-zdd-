@@ -38,10 +38,12 @@ export {
   applyNightInfoObservation,
   findPairInfoVariable,
   findCountInfoVariable,
+  findPoisonerTargetVariable,
   type NightInfoConfig,
   type NightInfoResult,
   type NightInfoVariable,
   type PairInfoOutput,
   type CountInfoOutput,
+  type PoisonerTargetOutput,
 } from "./night.js";
 export { Game } from "./game.js";

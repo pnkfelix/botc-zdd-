@@ -8,6 +8,7 @@ import {
   buildNightInfoZDD,
   findPairInfoVariable,
   findCountInfoVariable,
+  findPoisonerTargetVariable,
   type NightInfoConfig,
 } from "../src/night.js";
 
@@ -27,27 +28,28 @@ function makeSeatRoles(...roles: string[]): Map<number, string> {
 /** Create a NightInfoConfig for Trouble Brewing. */
 function makeConfig(
   seatRoles: Map<number, string>,
-  selectedRoles?: string[],
+  opts?: { selectedRoles?: string[]; malfunctioningSeats?: Set<number> },
 ): NightInfoConfig {
-  const roles = selectedRoles ?? [...seatRoles.values()];
+  const roles = opts?.selectedRoles ?? [...seatRoles.values()];
   return {
     numPlayers: seatRoles.size,
     seatRoles,
     selectedRoles: roles,
     script: TROUBLE_BREWING,
+    malfunctioningSeats: opts?.malfunctioningSeats,
   };
 }
 
-// ---------------------------------------------------------------------------
-// Direct builder tests (unit tests for buildNightInfoZDD)
-// ---------------------------------------------------------------------------
+// ============================================================================
+// No-Poisoner tests (using Spy as the minion to avoid triggering poisoner logic)
+// ============================================================================
 
-describe("buildNightInfoZDD", () => {
+describe("buildNightInfoZDD (no Poisoner)", () => {
   describe("Washerwoman", () => {
     it("enumerates valid ST choices for a 5-player game", () => {
-      // Seats: 0=Washerwoman, 1=Chef, 2=Empath, 3=Poisoner, 4=Imp
+      // Seats: 0=Washerwoman, 1=Chef, 2=Empath, 3=Spy, 4=Imp
       const seatRoles = makeSeatRoles(
-        "Washerwoman", "Chef", "Empath", "Poisoner", "Imp",
+        "Washerwoman", "Chef", "Empath", "Spy", "Imp",
       );
       const zdd = new ZDD();
       const result = buildNightInfoZDD(zdd, makeConfig(seatRoles));
@@ -57,17 +59,15 @@ describe("buildNightInfoZDD", () => {
       // For Empath at seat 2: decoys = seats 1, 3, 4 → 3 pairs
       // Total Washerwoman choices = 6
       // Chef count = 1 (seats 3,4 both evil and adjacent) → 1 choice
-      // Empath count = 1 (seat 1=Chef=good, seat 3=Poisoner=evil) → 1 choice
+      // Empath count = 1 (seat 1=Chef=good, seat 3=Spy=evil) → 1 choice
       // Total worlds = 6 × 1 × 1 = 6
       expect(zdd.count(result.root)).toBe(6);
     });
 
     it("handles Washerwoman with only one other Townsfolk", () => {
-      // Seats: 0=Washerwoman, 1=Soldier, 2=Butler, 3=Poisoner, 4=Imp
-      // Only other Townsfolk: Soldier (seat 1)
-      // Decoys for Soldier: seats 2, 3, 4 → 3 pairs
+      // Seats: 0=Washerwoman, 1=Soldier, 2=Butler, 3=Spy, 4=Imp
       const seatRoles = makeSeatRoles(
-        "Washerwoman", "Soldier", "Butler", "Poisoner", "Imp",
+        "Washerwoman", "Soldier", "Butler", "Spy", "Imp",
       );
       const zdd = new ZDD();
       const result = buildNightInfoZDD(zdd, makeConfig(seatRoles));
@@ -75,20 +75,17 @@ describe("buildNightInfoZDD", () => {
       const wwRange = result.roleVariableRanges.get("Washerwoman");
       expect(wwRange).toBeDefined();
 
-      // Count worlds from Washerwoman contribution only:
-      // 3 Washerwoman choices × 1 Chef (not in play) × 1 Empath (not in play)
-      // But Chef and Empath aren't in play, so just the Washerwoman's 3 choices
+      // Only Townsfolk target: Soldier (seat 1). Decoys: 2, 3, 4 → 3 pairs
       expect(zdd.count(result.root)).toBe(3);
     });
 
     it("generates correct pair outputs", () => {
       const seatRoles = makeSeatRoles(
-        "Washerwoman", "Chef", "Empath", "Poisoner", "Imp",
+        "Washerwoman", "Chef", "Empath", "Spy", "Imp",
       );
       const zdd = new ZDD();
       const result = buildNightInfoZDD(zdd, makeConfig(seatRoles));
 
-      // Check that pair outputs exist for Chef and Empath targets
       const wwRange = result.roleVariableRanges.get("Washerwoman")!;
       const wwPairs: Array<{ playerA: number; playerB: number; namedRole: string }> = [];
       for (let vid = wwRange.start; vid < wwRange.start + wwRange.count; vid++) {
@@ -96,20 +93,16 @@ describe("buildNightInfoZDD", () => {
         if (output) wwPairs.push(output);
       }
 
-      // Should have 6 pair outputs
       expect(wwPairs.length).toBe(6);
 
-      // 3 outputs should name "Chef", 3 should name "Empath"
       const chefOutputs = wwPairs.filter((p) => p.namedRole === "Chef");
       const empathOutputs = wwPairs.filter((p) => p.namedRole === "Empath");
       expect(chefOutputs.length).toBe(3);
       expect(empathOutputs.length).toBe(3);
 
-      // All Chef outputs should include seat 1 (the true Chef)
       for (const o of chefOutputs) {
         expect(o.playerA === 1 || o.playerB === 1).toBe(true);
       }
-      // All Empath outputs should include seat 2 (the true Empath)
       for (const o of empathOutputs) {
         expect(o.playerA === 2 || o.playerB === 2).toBe(true);
       }
@@ -124,27 +117,24 @@ describe("buildNightInfoZDD", () => {
 
   describe("Librarian", () => {
     it("returns 'no outsiders' when no outsiders are in play", () => {
-      // 5-player: 3 Townsfolk, 0 Outsiders, 1 Minion, 1 Demon
       const seatRoles = makeSeatRoles(
-        "Librarian", "Chef", "Empath", "Poisoner", "Imp",
+        "Librarian", "Chef", "Empath", "Spy", "Imp",
       );
       const zdd = new ZDD();
       const result = buildNightInfoZDD(zdd, makeConfig(seatRoles));
 
       const libRange = result.roleVariableRanges.get("Librarian");
       expect(libRange).toBeDefined();
-      expect(libRange!.count).toBe(1); // Just the "no outsiders" variable
+      expect(libRange!.count).toBe(1);
 
-      // Check the variable description
       const libVar = result.variables.find((v) => v.infoRole === "Librarian");
       expect(libVar).toBeDefined();
       expect(libVar!.description).toBe("No Outsiders in play");
     });
 
     it("enumerates outsider targets when outsiders are in play", () => {
-      // 6-player: 3 Townsfolk, 1 Outsider, 1 Minion, 1 Demon
       const seatRoles = makeSeatRoles(
-        "Librarian", "Chef", "Empath", "Butler", "Poisoner", "Imp",
+        "Librarian", "Chef", "Empath", "Butler", "Spy", "Imp",
       );
       const zdd = new ZDD();
       const result = buildNightInfoZDD(zdd, makeConfig(seatRoles));
@@ -152,8 +142,7 @@ describe("buildNightInfoZDD", () => {
       const libRange = result.roleVariableRanges.get("Librarian");
       expect(libRange).toBeDefined();
 
-      // Outsider: Butler at seat 3. Decoys: seats 1, 2, 4, 5 (not seat 0=Librarian, not seat 3=Butler)
-      // = 4 pairs, all naming "Butler"
+      // Outsider: Butler at seat 3. Decoys: seats 1, 2, 4, 5 → 4 pairs
       const libPairs = [];
       for (let vid = libRange!.start; vid < libRange!.start + libRange!.count; vid++) {
         const output = result.pairOutputs.get(vid);
@@ -168,9 +157,9 @@ describe("buildNightInfoZDD", () => {
 
   describe("Investigator", () => {
     it("enumerates minion targets", () => {
-      // Seats: 0=Investigator, 1=Chef, 2=Empath, 3=Poisoner, 4=Imp
+      // Seats: 0=Investigator, 1=Chef, 2=Empath, 3=Spy, 4=Imp
       const seatRoles = makeSeatRoles(
-        "Investigator", "Chef", "Empath", "Poisoner", "Imp",
+        "Investigator", "Chef", "Empath", "Spy", "Imp",
       );
       const zdd = new ZDD();
       const result = buildNightInfoZDD(zdd, makeConfig(seatRoles));
@@ -178,8 +167,7 @@ describe("buildNightInfoZDD", () => {
       const invRange = result.roleVariableRanges.get("Investigator");
       expect(invRange).toBeDefined();
 
-      // Minion: Poisoner at seat 3. Decoys: seats 1, 2, 4 (not 0=Investigator, not 3=Poisoner)
-      // = 3 pairs, all naming "Poisoner"
+      // Minion: Spy at seat 3. Decoys: 1, 2, 4 → 3 pairs
       const invPairs = [];
       for (let vid = invRange!.start; vid < invRange!.start + invRange!.count; vid++) {
         const output = result.pairOutputs.get(vid);
@@ -187,7 +175,7 @@ describe("buildNightInfoZDD", () => {
       }
       expect(invPairs.length).toBe(3);
       for (const p of invPairs) {
-        expect(p.namedRole).toBe("Poisoner");
+        expect(p.namedRole).toBe("Spy");
         expect(p.playerA === 3 || p.playerB === 3).toBe(true);
       }
     });
@@ -195,10 +183,10 @@ describe("buildNightInfoZDD", () => {
 
   describe("Chef", () => {
     it("counts adjacent evil pairs correctly", () => {
-      // Circle: 0=WW, 1=Chef, 2=Empath, 3=Poisoner, 4=Imp
-      // Evil: Poisoner(3), Imp(4). Adjacent evil pair: (3,4) → count = 1
+      // Circle: 0=WW, 1=Chef, 2=Empath, 3=Spy, 4=Imp
+      // Evil: Spy(3), Imp(4). Adjacent: (3,4) → count = 1
       const seatRoles = makeSeatRoles(
-        "Washerwoman", "Chef", "Empath", "Poisoner", "Imp",
+        "Washerwoman", "Chef", "Empath", "Spy", "Imp",
       );
       const zdd = new ZDD();
       const result = buildNightInfoZDD(zdd, makeConfig(seatRoles));
@@ -206,11 +194,10 @@ describe("buildNightInfoZDD", () => {
       const chefCountVar = findCountInfoVariable(result, "Chef", 1);
       expect(chefCountVar).toBeDefined();
 
-      // Verify that the true count (1) is in the ZDD
       const constrained = zdd.require(result.root, chefCountVar!);
       expect(zdd.count(constrained)).toBeGreaterThan(0);
 
-      // Verify that a wrong count (0) is NOT valid
+      // Wrong count (0) is NOT valid
       const wrongCountVar = findCountInfoVariable(result, "Chef", 0);
       expect(wrongCountVar).toBeDefined();
       const wrongConstrained = zdd.require(result.root, wrongCountVar!);
@@ -218,58 +205,50 @@ describe("buildNightInfoZDD", () => {
     });
 
     it("returns 0 when no evil players are adjacent", () => {
-      // Circle: 0=WW, 1=Poisoner, 2=Chef, 3=Imp, 4=Empath
-      // Evil: Poisoner(1), Imp(3). Not adjacent → count = 0
+      // Circle: 0=WW, 1=Spy, 2=Chef, 3=Imp, 4=Empath
+      // Evil: Spy(1), Imp(3). Not adjacent → count = 0
       const seatRoles = makeSeatRoles(
-        "Washerwoman", "Poisoner", "Chef", "Imp", "Empath",
+        "Washerwoman", "Spy", "Chef", "Imp", "Empath",
       );
       const zdd = new ZDD();
       const result = buildNightInfoZDD(zdd, makeConfig(seatRoles));
 
       const count0Var = findCountInfoVariable(result, "Chef", 0);
       expect(count0Var).toBeDefined();
-
-      const constrained = zdd.require(result.root, count0Var!);
-      expect(zdd.count(constrained)).toBeGreaterThan(0);
+      expect(zdd.count(zdd.require(result.root, count0Var!))).toBeGreaterThan(0);
 
       const count1Var = findCountInfoVariable(result, "Chef", 1);
-      const wrongConstrained = zdd.require(result.root, count1Var!);
-      expect(zdd.count(wrongConstrained)).toBe(0);
+      expect(zdd.count(zdd.require(result.root, count1Var!))).toBe(0);
     });
 
     it("counts multiple adjacent evil pairs", () => {
-      // 7-player circle: 0=WW, 1=Chef, 2=Spy, 3=Poisoner, 4=Imp, 5=Empath, 6=Virgin
-      // Evil: Spy(2), Poisoner(3), Imp(4). Adjacent pairs: (2,3) and (3,4) → count = 2
+      // 7-player: 0=WW, 1=Chef, 2=Spy, 3=Scarlet Woman, 4=Imp, 5=Empath, 6=Virgin
+      // Evil: Spy(2), SW(3), Imp(4). Adjacent: (2,3) and (3,4) → count = 2
       const seatRoles = makeSeatRoles(
-        "Washerwoman", "Chef", "Spy", "Poisoner", "Imp", "Empath", "Virgin",
+        "Washerwoman", "Chef", "Spy", "Scarlet Woman", "Imp", "Empath", "Virgin",
       );
       const zdd = new ZDD();
       const result = buildNightInfoZDD(zdd, makeConfig(seatRoles));
 
       const count2Var = findCountInfoVariable(result, "Chef", 2);
       expect(count2Var).toBeDefined();
-
-      const constrained = zdd.require(result.root, count2Var!);
-      expect(zdd.count(constrained)).toBeGreaterThan(0);
+      expect(zdd.count(zdd.require(result.root, count2Var!))).toBeGreaterThan(0);
     });
   });
 
   describe("Empath", () => {
     it("counts evil neighbors correctly (one evil neighbor)", () => {
-      // Circle: 0=WW, 1=Chef, 2=Empath, 3=Poisoner, 4=Imp
-      // Empath at seat 2. Neighbors: seat 1 (Chef=good), seat 3 (Poisoner=evil)
-      // Count = 1
+      // Circle: 0=WW, 1=Chef, 2=Empath, 3=Spy, 4=Imp
+      // Empath at seat 2. Neighbors: seat 1 (Chef=good), seat 3 (Spy=evil) → 1
       const seatRoles = makeSeatRoles(
-        "Washerwoman", "Chef", "Empath", "Poisoner", "Imp",
+        "Washerwoman", "Chef", "Empath", "Spy", "Imp",
       );
       const zdd = new ZDD();
       const result = buildNightInfoZDD(zdd, makeConfig(seatRoles));
 
       const count1Var = findCountInfoVariable(result, "Empath", 1);
       expect(count1Var).toBeDefined();
-
-      const constrained = zdd.require(result.root, count1Var!);
-      expect(zdd.count(constrained)).toBeGreaterThan(0);
+      expect(zdd.count(zdd.require(result.root, count1Var!))).toBeGreaterThan(0);
 
       // Count 0 and 2 should not be valid
       const count0Var = findCountInfoVariable(result, "Empath", 0);
@@ -279,11 +258,9 @@ describe("buildNightInfoZDD", () => {
     });
 
     it("counts zero evil neighbors", () => {
-      // Circle: 0=Poisoner, 1=WW, 2=Empath, 3=Chef, 4=Imp
-      // Empath at seat 2. Neighbors: seat 1 (WW=good), seat 3 (Chef=good)
-      // Count = 0
+      // Circle: 0=Spy, 1=WW, 2=Empath, 3=Chef, 4=Imp
       const seatRoles = makeSeatRoles(
-        "Poisoner", "Washerwoman", "Empath", "Chef", "Imp",
+        "Spy", "Washerwoman", "Empath", "Chef", "Imp",
       );
       const zdd = new ZDD();
       const result = buildNightInfoZDD(zdd, makeConfig(seatRoles));
@@ -294,11 +271,9 @@ describe("buildNightInfoZDD", () => {
     });
 
     it("counts two evil neighbors", () => {
-      // Circle: 0=WW, 1=Poisoner, 2=Empath, 3=Imp, 4=Chef
-      // Empath at seat 2. Neighbors: seat 1 (Poisoner=evil), seat 3 (Imp=evil)
-      // Count = 2
+      // Circle: 0=WW, 1=Spy, 2=Empath, 3=Imp, 4=Chef
       const seatRoles = makeSeatRoles(
-        "Washerwoman", "Poisoner", "Empath", "Imp", "Chef",
+        "Washerwoman", "Spy", "Empath", "Imp", "Chef",
       );
       const zdd = new ZDD();
       const result = buildNightInfoZDD(zdd, makeConfig(seatRoles));
@@ -311,14 +286,13 @@ describe("buildNightInfoZDD", () => {
 
   describe("roles not in play", () => {
     it("skips info roles that are not in the seat assignment", () => {
-      // No info roles at all: Soldier, Virgin, Slayer, Poisoner, Imp
+      // No info roles at all, no Poisoner: Soldier, Virgin, Slayer, Spy, Imp
       const seatRoles = makeSeatRoles(
-        "Soldier", "Virgin", "Slayer", "Poisoner", "Imp",
+        "Soldier", "Virgin", "Slayer", "Spy", "Imp",
       );
       const zdd = new ZDD();
       const result = buildNightInfoZDD(zdd, makeConfig(seatRoles));
 
-      // No info roles → no variables, root is TOP (one trivial world)
       expect(result.variableCount).toBe(0);
       expect(result.roleVariableRanges.size).toBe(0);
       expect(zdd.count(result.root)).toBe(1);
@@ -327,28 +301,19 @@ describe("buildNightInfoZDD", () => {
 
   describe("combined world count", () => {
     it("cross-products independent info role choices", () => {
-      // 7-player: WW(0), Librarian(1), Investigator(2), Chef(3), Empath(4), Poisoner(5), Imp(6)
-      // All 5 info roles in play!
+      // 7-player: WW(0), Librarian(1), Investigator(2), Chef(3), Empath(4), Spy(5), Imp(6)
       const seatRoles = makeSeatRoles(
         "Washerwoman", "Librarian", "Investigator", "Chef", "Empath",
-        "Poisoner", "Imp",
+        "Spy", "Imp",
       );
       const zdd = new ZDD();
       const result = buildNightInfoZDD(zdd, makeConfig(seatRoles));
 
-      // Washerwoman: other Townsfolk = Librarian(1), Investigator(2), Chef(3), Empath(4)
-      // For each target at seat S, decoys = all seats except 0(WW) and S
-      // Librarian(1): decoys 2,3,4,5,6 → 5 pairs naming "Librarian"
-      // Investigator(2): decoys 1,3,4,5,6 → 5 pairs naming "Investigator"
-      // Chef(3): decoys 1,2,4,5,6 → 5 pairs naming "Chef"
-      // Empath(4): decoys 1,2,3,5,6 → 5 pairs naming "Empath"
-      // Total WW choices = 20
-
-      // Librarian: outsiders = none (7-player base: 0 outsiders) → "No Outsiders" = 1
-      // Investigator: minion = Poisoner(5). Decoys: 0,1,3,4,6 (not 2=Inv, not 5=Pois) → 5 pairs
-      // Chef: evil = Poisoner(5), Imp(6). Adjacent: (5,6)=yes, (6,0)=no → count=1 → 1 choice
-      // Empath: seat 4, neighbors: seat 3 (Chef=good), seat 5 (Poisoner=evil) → count=1 → 1 choice
-
+      // WW: 4 Townsfolk targets × 5 decoys each = 20
+      // Librarian: no outsiders → 1
+      // Investigator: Spy(5), decoys 0,1,3,4,6 → 5 pairs
+      // Chef: evil (5,6) adjacent → count=1 → 1
+      // Empath: seat 4, neighbors 3(Chef=good), 5(Spy=evil) → count=1 → 1
       // Total = 20 × 1 × 5 × 1 × 1 = 100
       expect(zdd.count(result.root)).toBe(100);
     });
@@ -356,58 +321,54 @@ describe("buildNightInfoZDD", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Lookup helper tests
+// Lookup helper tests (no Poisoner)
 // ---------------------------------------------------------------------------
 
 describe("findPairInfoVariable", () => {
   it("finds the correct variable for a valid output", () => {
     const seatRoles = makeSeatRoles(
-      "Washerwoman", "Chef", "Empath", "Poisoner", "Imp",
+      "Washerwoman", "Chef", "Empath", "Spy", "Imp",
     );
     const zdd = new ZDD();
     const result = buildNightInfoZDD(zdd, makeConfig(seatRoles));
 
-    // "Players 1 and 3 is the Chef" — Chef at seat 1, decoy at seat 3
     const varId = findPairInfoVariable(result, "Washerwoman", 1, 3, "Chef");
     expect(varId).toBeDefined();
 
-    // Verify this variable is in the ZDD
     const constrained = zdd.require(result.root, varId!);
     expect(zdd.count(constrained)).toBeGreaterThan(0);
   });
 
   it("returns undefined for an invalid output", () => {
     const seatRoles = makeSeatRoles(
-      "Washerwoman", "Chef", "Empath", "Poisoner", "Imp",
+      "Washerwoman", "Chef", "Empath", "Spy", "Imp",
     );
     const zdd = new ZDD();
     const result = buildNightInfoZDD(zdd, makeConfig(seatRoles));
 
-    // "Players 3 and 4 is the Chef" — neither seat 3 (Poisoner) nor seat 4 (Imp) is Chef
+    // "Players 3 and 4 is the Chef" — neither is Chef → no variable
     const varId = findPairInfoVariable(result, "Washerwoman", 3, 4, "Chef");
     expect(varId).toBeUndefined();
   });
 
   it("returns undefined for output naming the info role itself", () => {
     const seatRoles = makeSeatRoles(
-      "Washerwoman", "Chef", "Empath", "Poisoner", "Imp",
+      "Washerwoman", "Chef", "Empath", "Spy", "Imp",
     );
     const zdd = new ZDD();
     const result = buildNightInfoZDD(zdd, makeConfig(seatRoles));
 
-    // Try to find a variable naming "Washerwoman" — info role can't learn about itself
     const varId = findPairInfoVariable(result, "Washerwoman", 0, 1, "Washerwoman");
     expect(varId).toBeUndefined();
   });
 
   it("normalizes player order", () => {
     const seatRoles = makeSeatRoles(
-      "Washerwoman", "Chef", "Empath", "Poisoner", "Imp",
+      "Washerwoman", "Chef", "Empath", "Spy", "Imp",
     );
     const zdd = new ZDD();
     const result = buildNightInfoZDD(zdd, makeConfig(seatRoles));
 
-    // (3, 1) should find the same as (1, 3)
     const v1 = findPairInfoVariable(result, "Washerwoman", 1, 3, "Chef");
     const v2 = findPairInfoVariable(result, "Washerwoman", 3, 1, "Chef");
     expect(v1).toBe(v2);
@@ -417,7 +378,7 @@ describe("findPairInfoVariable", () => {
 describe("findCountInfoVariable", () => {
   it("finds Chef count variables", () => {
     const seatRoles = makeSeatRoles(
-      "Washerwoman", "Chef", "Empath", "Poisoner", "Imp",
+      "Washerwoman", "Chef", "Empath", "Spy", "Imp",
     );
     const zdd = new ZDD();
     const result = buildNightInfoZDD(zdd, makeConfig(seatRoles));
@@ -430,7 +391,7 @@ describe("findCountInfoVariable", () => {
 
   it("finds Empath count variables", () => {
     const seatRoles = makeSeatRoles(
-      "Washerwoman", "Chef", "Empath", "Poisoner", "Imp",
+      "Washerwoman", "Chef", "Empath", "Spy", "Imp",
     );
     const zdd = new ZDD();
     const result = buildNightInfoZDD(zdd, makeConfig(seatRoles));
@@ -443,7 +404,7 @@ describe("findCountInfoVariable", () => {
 
   it("returns undefined for role not in play", () => {
     const seatRoles = makeSeatRoles(
-      "Washerwoman", "Soldier", "Virgin", "Poisoner", "Imp",
+      "Washerwoman", "Soldier", "Virgin", "Spy", "Imp",
     );
     const zdd = new ZDD();
     const result = buildNightInfoZDD(zdd, makeConfig(seatRoles));
@@ -454,61 +415,52 @@ describe("findCountInfoVariable", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Observation / constraint tests
+// Observation / constraint tests (no Poisoner)
 // ---------------------------------------------------------------------------
 
-describe("Night info observations", () => {
+describe("Night info observations (no Poisoner)", () => {
   it("requiring a valid Washerwoman output narrows to 1 world per info role", () => {
     const seatRoles = makeSeatRoles(
-      "Washerwoman", "Chef", "Empath", "Poisoner", "Imp",
+      "Washerwoman", "Chef", "Empath", "Spy", "Imp",
     );
     const zdd = new ZDD();
     const result = buildNightInfoZDD(zdd, makeConfig(seatRoles));
 
-    // 6 total worlds (6 WW choices × 1 Chef × 1 Empath)
     expect(zdd.count(result.root)).toBe(6);
 
-    // Require "Washerwoman told players 1,3 = Chef"
     const varId = findPairInfoVariable(result, "Washerwoman", 1, 3, "Chef")!;
     const constrained = zdd.require(result.root, varId);
-
-    // Should narrow to exactly 1 world
     expect(zdd.count(constrained)).toBe(1);
   });
 
   it("requiring a nonexistent variable yields BOTTOM", () => {
     const seatRoles = makeSeatRoles(
-      "Washerwoman", "Chef", "Empath", "Poisoner", "Imp",
+      "Washerwoman", "Chef", "Empath", "Spy", "Imp",
     );
     const zdd = new ZDD();
     const result = buildNightInfoZDD(zdd, makeConfig(seatRoles));
 
-    // Use a variable ID way outside the allocated range
-    const nonexistentVar = 9999;
-    const constrained = zdd.require(result.root, nonexistentVar);
+    const constrained = zdd.require(result.root, 9999);
     expect(constrained).toBe(BOTTOM);
   });
 
   it("excluding a variable removes worlds containing it", () => {
     const seatRoles = makeSeatRoles(
-      "Washerwoman", "Chef", "Empath", "Poisoner", "Imp",
+      "Washerwoman", "Chef", "Empath", "Spy", "Imp",
     );
     const zdd = new ZDD();
     const result = buildNightInfoZDD(zdd, makeConfig(seatRoles));
 
     expect(zdd.count(result.root)).toBe(6);
 
-    // Exclude one Washerwoman output
     const varId = findPairInfoVariable(result, "Washerwoman", 1, 3, "Chef")!;
     const constrained = zdd.offset(result.root, varId);
-
-    // Should have 5 remaining worlds
     expect(zdd.count(constrained)).toBe(5);
   });
 
   it("requiring two different WW outputs yields BOTTOM (contradiction)", () => {
     const seatRoles = makeSeatRoles(
-      "Washerwoman", "Chef", "Empath", "Poisoner", "Imp",
+      "Washerwoman", "Chef", "Empath", "Spy", "Imp",
     );
     const zdd = new ZDD();
     const result = buildNightInfoZDD(zdd, makeConfig(seatRoles));
@@ -523,23 +475,301 @@ describe("Night info observations", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
+// ============================================================================
+// Poisoner target selection tests
+// ============================================================================
+
+describe("Poisoner target selection", () => {
+  // Standard scenario: WW(0), Chef(1), Empath(2), Poisoner(3), Imp(4)
+  // Poisoner at seat 3. Targets: seats 0, 1, 2, 4.
+  //
+  // Maximal WW variables: C(4,2) × 13 Townsfolk = 78
+  // Maximal Chef variables: counts 0..5 = 6
+  // Maximal Empath variables: counts 0,1,2 = 3
+  //
+  // Branches:
+  //   Target 0 (WW):    WW malfunctions (78) × Chef(1) × Empath(1) = 78
+  //   Target 1 (Chef):  WW(6) × Chef malfunctions (6) × Empath(1) = 36
+  //   Target 2 (Empath): WW(6) × Chef(1) × Empath malfunctions (3) = 18
+  //   Target 4 (Imp):   WW(6) × Chef(1) × Empath(1) = 6
+  // Total = 78 + 36 + 18 + 6 = 138
+
+  function standardPoisonerSetup() {
+    const seatRoles = makeSeatRoles(
+      "Washerwoman", "Chef", "Empath", "Poisoner", "Imp",
+    );
+    const zdd = new ZDD();
+    const result = buildNightInfoZDD(zdd, makeConfig(seatRoles));
+    return { seatRoles, zdd, result };
+  }
+
+  it("total world count is the sum across all poisoner target branches", () => {
+    const { zdd, result } = standardPoisonerSetup();
+    expect(zdd.count(result.root)).toBe(138);
+  });
+
+  it("has poisoner target variables", () => {
+    const { result } = standardPoisonerSetup();
+    expect(result.poisonerTargetOutputs.size).toBe(4);
+
+    const poisonerRange = result.roleVariableRanges.get("Poisoner");
+    expect(poisonerRange).toBeDefined();
+    expect(poisonerRange!.count).toBe(4);
+    // Poisoner vars come first (lowest IDs)
+    expect(poisonerRange!.start).toBe(0);
+  });
+
+  it("findPoisonerTargetVariable finds correct targets", () => {
+    const { result } = standardPoisonerSetup();
+
+    for (const seat of [0, 1, 2, 4]) {
+      const varId = findPoisonerTargetVariable(result, seat);
+      expect(varId).toBeDefined();
+      expect(result.poisonerTargetOutputs.get(varId!)!.targetSeat).toBe(seat);
+    }
+
+    // Poisoner can't target self (seat 3)
+    expect(findPoisonerTargetVariable(result, 3)).toBeUndefined();
+  });
+
+  it("poisoner targets non-info role: all info roles function normally", () => {
+    const { zdd, result } = standardPoisonerSetup();
+
+    // Require poisoner targets seat 4 (Imp) — no info role poisoned
+    const targetVar = findPoisonerTargetVariable(result, 4)!;
+    const constrained = zdd.require(result.root, targetVar);
+
+    // WW(6) × Chef(1) × Empath(1) = 6
+    expect(zdd.count(constrained)).toBe(6);
+  });
+
+  it("poisoner targets Washerwoman: WW gets unconstrained outputs", () => {
+    const { zdd, result } = standardPoisonerSetup();
+
+    const targetVar = findPoisonerTargetVariable(result, 0)!;
+    const constrained = zdd.require(result.root, targetVar);
+
+    // WW malfunctions (78) × Chef(1) × Empath(1) = 78
+    expect(zdd.count(constrained)).toBe(78);
+  });
+
+  it("poisoner targets Chef: Chef can report any count", () => {
+    const { zdd, result } = standardPoisonerSetup();
+
+    const targetVar = findPoisonerTargetVariable(result, 1)!;
+    const constrained = zdd.require(result.root, targetVar);
+
+    // WW(6) × Chef malfunctions (6 counts) × Empath(1) = 36
+    expect(zdd.count(constrained)).toBe(36);
+  });
+
+  it("poisoner targets Empath: Empath can report 0, 1, or 2", () => {
+    const { zdd, result } = standardPoisonerSetup();
+
+    const targetVar = findPoisonerTargetVariable(result, 2)!;
+    const constrained = zdd.require(result.root, targetVar);
+
+    // WW(6) × Chef(1) × Empath malfunctions (3) = 18
+    expect(zdd.count(constrained)).toBe(18);
+  });
+
+  it("requiring output only valid when malfunctioning forces poisoner target", () => {
+    const { zdd, result } = standardPoisonerSetup();
+
+    // Chef true count is 1 (Poisoner+Imp adjacent). Require count=0 (only valid malfunctioning).
+    const count0Var = findCountInfoVariable(result, "Chef", 0)!;
+    const constrained = zdd.require(result.root, count0Var);
+
+    // Only the branch where poisoner targets seat 1 (Chef) allows count=0.
+    // That branch: WW(6) × Chef(count=0, 1 of 6 options) × Empath(1) = 6
+    expect(zdd.count(constrained)).toBe(6);
+
+    // Verify the poisoner must be targeting seat 1
+    const target1Var = findPoisonerTargetVariable(result, 1)!;
+    const doublyConstrained = zdd.require(constrained, target1Var);
+    expect(zdd.count(doublyConstrained)).toBe(6); // All worlds already have target 1
+  });
+
+  it("requiring a truthful info output is valid in all branches", () => {
+    const { zdd, result } = standardPoisonerSetup();
+
+    // Require WW shows "players 1,3 = Chef" — truthful output valid in all branches
+    const wwVar = findPairInfoVariable(result, "Washerwoman", 1, 3, "Chef")!;
+    const constrained = zdd.require(result.root, wwVar);
+
+    // Target 0 (WW malfunctions): 1 (this specific output) × 1 × 1 = 1
+    // Target 1 (Chef malfunctions): 1 × 6 × 1 = 6
+    // Target 2 (Empath malfunctions): 1 × 1 × 3 = 3
+    // Target 4 (all function): 1 × 1 × 1 = 1
+    // Total = 1 + 6 + 3 + 1 = 11
+    expect(zdd.count(constrained)).toBe(11);
+  });
+
+  it("requiring a WW output only valid when malfunctioning forces poisoner on WW", () => {
+    const { zdd, result } = standardPoisonerSetup();
+
+    // "Players 3,4 = Chef" — neither seat 3 (Poisoner) nor seat 4 (Imp) is Chef.
+    // This output is only in the maximal (malfunctioning) variable set.
+    const wwVar = findPairInfoVariable(result, "Washerwoman", 3, 4, "Chef")!;
+    expect(wwVar).toBeDefined();
+
+    const constrained = zdd.require(result.root, wwVar);
+
+    // Only valid when WW malfunctions → poisoner targets seat 0
+    // WW(1 specific) × Chef(1) × Empath(1) = 1
+    expect(zdd.count(constrained)).toBe(1);
+
+    // Verify poisoner targets seat 0
+    const target0Var = findPoisonerTargetVariable(result, 0)!;
+    expect(zdd.require(constrained, target0Var)).not.toBe(BOTTOM);
+  });
+
+  it("info role variables have correct ranges with poisoner offset", () => {
+    const { result } = standardPoisonerSetup();
+
+    // Poisoner: 4 vars at start
+    const poisonerRange = result.roleVariableRanges.get("Poisoner")!;
+    expect(poisonerRange.start).toBe(0);
+    expect(poisonerRange.count).toBe(4);
+
+    // Info role vars start after poisoner vars
+    const wwRange = result.roleVariableRanges.get("Washerwoman")!;
+    expect(wwRange.start).toBe(4);
+
+    const chefRange = result.roleVariableRanges.get("Chef")!;
+    expect(chefRange.start).toBe(4 + wwRange.count);
+
+    const empathRange = result.roleVariableRanges.get("Empath")!;
+    expect(empathRange.start).toBe(4 + wwRange.count + chefRange.count);
+  });
+
+  it("no poisoner targets available when Poisoner is not in play", () => {
+    const seatRoles = makeSeatRoles(
+      "Washerwoman", "Chef", "Empath", "Spy", "Imp",
+    );
+    const zdd = new ZDD();
+    const result = buildNightInfoZDD(zdd, makeConfig(seatRoles));
+
+    expect(result.poisonerTargetOutputs.size).toBe(0);
+    expect(result.roleVariableRanges.has("Poisoner")).toBe(false);
+  });
+});
+
+// ============================================================================
+// Malfunctioning seats (Drunk) tests
+// ============================================================================
+
+describe("malfunctioningSeats (Drunk)", () => {
+  it("malfunctioning Empath gets unconstrained outputs (no Poisoner)", () => {
+    // WW(0), Chef(1), Empath(2), Spy(3), Imp(4)
+    // Empath at seat 2 is the Drunk → always malfunctioning
+    const seatRoles = makeSeatRoles(
+      "Washerwoman", "Chef", "Empath", "Spy", "Imp",
+    );
+    const zdd = new ZDD();
+    const result = buildNightInfoZDD(zdd, makeConfig(seatRoles, {
+      malfunctioningSeats: new Set([2]),
+    }));
+
+    // WW functioning (6) × Chef functioning (count=1, 1) × Empath malfunctioning (3)
+    // = 6 × 1 × 3 = 18
+    expect(zdd.count(result.root)).toBe(18);
+  });
+
+  it("malfunctioning Empath allows wrong count", () => {
+    const seatRoles = makeSeatRoles(
+      "Washerwoman", "Chef", "Empath", "Spy", "Imp",
+    );
+    const zdd = new ZDD();
+    const result = buildNightInfoZDD(zdd, makeConfig(seatRoles, {
+      malfunctioningSeats: new Set([2]),
+    }));
+
+    // True Empath count is 1 (neighbor seat 3 = Spy = evil)
+    // But malfunctioning, so count=0 is also valid
+    const count0Var = findCountInfoVariable(result, "Empath", 0)!;
+    const constrained = zdd.require(result.root, count0Var);
+    // WW(6) × Chef(1) × Empath(count=0) = 6
+    expect(zdd.count(constrained)).toBe(6);
+  });
+
+  it("malfunctioning Chef allows any count (no Poisoner)", () => {
+    const seatRoles = makeSeatRoles(
+      "Washerwoman", "Chef", "Empath", "Spy", "Imp",
+    );
+    const zdd = new ZDD();
+    const result = buildNightInfoZDD(zdd, makeConfig(seatRoles, {
+      malfunctioningSeats: new Set([1]),
+    }));
+
+    // WW functioning (6) × Chef malfunctioning (6 counts) × Empath functioning (1)
+    // = 6 × 6 × 1 = 36
+    expect(zdd.count(result.root)).toBe(36);
+  });
+
+  it("malfunctioning WW gets all possible outputs (no Poisoner)", () => {
+    const seatRoles = makeSeatRoles(
+      "Washerwoman", "Chef", "Empath", "Spy", "Imp",
+    );
+    const zdd = new ZDD();
+    const result = buildNightInfoZDD(zdd, makeConfig(seatRoles, {
+      malfunctioningSeats: new Set([0]),
+    }));
+
+    // WW malfunctioning: C(4,2) pairs × 13 Townsfolk = 78
+    // Chef functioning (1) × Empath functioning (1)
+    // = 78 × 1 × 1 = 78
+    expect(zdd.count(result.root)).toBe(78);
+  });
+
+  it("malfunctioning seat is always unconstrained regardless of poisoner target", () => {
+    // WW(0), Chef(1), Empath(2), Poisoner(3), Imp(4)
+    // Empath at seat 2 is Drunk (always malfunctioning)
+    const seatRoles = makeSeatRoles(
+      "Washerwoman", "Chef", "Empath", "Poisoner", "Imp",
+    );
+    const zdd = new ZDD();
+    const result = buildNightInfoZDD(zdd, makeConfig(seatRoles, {
+      malfunctioningSeats: new Set([2]),
+    }));
+
+    // Empath always malfunctions (3 options), regardless of poisoner target.
+    //   Target 0 (WW): WW malfunctions (78) × Chef(1) × Empath(3) = 234
+    //   Target 1 (Chef): WW(6) × Chef malfunctions (6) × Empath(3) = 108
+    //   Target 2 (Empath): WW(6) × Chef(1) × Empath(already malfunctioning, 3) = 18
+    //   Target 4 (Imp): WW(6) × Chef(1) × Empath(3) = 18
+    // Total = 234 + 108 + 18 + 18 = 378
+    expect(zdd.count(result.root)).toBe(378);
+
+    // Verify Empath is unconstrained even when poisoner targets someone else
+    const target4Var = findPoisonerTargetVariable(result, 4)!;
+    const constrained = zdd.require(result.root, target4Var);
+    // WW(6) × Chef(1) × Empath(3) = 18
+    expect(zdd.count(constrained)).toBe(18);
+
+    // Empath count=0 should be valid in every branch
+    const count0Var = findCountInfoVariable(result, "Empath", 0)!;
+    const withCount0 = zdd.require(result.root, count0Var);
+    // Should be valid in all 4 branches (Empath always has 3 options, picking 1)
+    // Target 0: 78×1×1 = 78, Target 1: 6×6×1 = 36, Target 2: 6×1×1 = 6, Target 4: 6×1×1 = 6
+    // Total: 78+36+6+6 = 126
+    expect(zdd.count(withCount0)).toBe(126);
+  });
+});
+
+// ============================================================================
 // Game class integration tests
-// ---------------------------------------------------------------------------
+// ============================================================================
 
 describe("Game.buildNightInfo", () => {
-  /**
-   * Helper: set up a 5-player game through distribution → seat assignment,
-   * resolve to a specific concrete assignment, then build night info.
-   */
   function setupGameWithNightInfo(
     roles: string[],
     seatOrder: string[],
+    malfunctioningSeats?: Set<number>,
   ): { game: Game; seatAssignment: Map<number, string> } {
     const game = new Game(TROUBLE_BREWING, roles.length);
     game.buildDistribution();
 
-    // Find the distribution containing exactly these roles
     const roleIndices = roles.map((name) =>
       TROUBLE_BREWING.roles.findIndex((r) => r.name === name),
     );
@@ -547,10 +777,8 @@ describe("Game.buildNightInfo", () => {
 
     game.buildSeatAssignment(roleIndices);
 
-    // Build the specific seat assignment
     const selectedRoles = game.selectedRoles!;
 
-    // Apply observations to fix each seat to the desired role
     for (let seat = 0; seat < seatOrder.length; seat++) {
       const roleIndex = selectedRoles.indexOf(seatOrder[seat]);
       game.applyObservation({
@@ -561,7 +789,6 @@ describe("Game.buildNightInfo", () => {
     }
     expect(game.countWorlds()).toBe(1);
 
-    // Enumerate the single remaining assignment and resolve it
     const assignments = game.zdd.enumerate(game.currentRoot);
     expect(assignments.length).toBe(1);
     const seatAssignment = resolveSeatAssignment(
@@ -570,16 +797,15 @@ describe("Game.buildNightInfo", () => {
       selectedRoles,
     );
 
-    // Build night info
-    game.buildNightInfo(seatAssignment);
+    game.buildNightInfo(seatAssignment, malfunctioningSeats);
 
     return { game, seatAssignment };
   }
 
   it("creates a NightInfo phase after seat assignment", () => {
     const { game } = setupGameWithNightInfo(
-      ["Washerwoman", "Chef", "Empath", "Poisoner", "Imp"],
-      ["Washerwoman", "Chef", "Empath", "Poisoner", "Imp"],
+      ["Washerwoman", "Chef", "Empath", "Spy", "Imp"],
+      ["Washerwoman", "Chef", "Empath", "Spy", "Imp"],
     );
 
     expect(game.phaseCount).toBe(3);
@@ -587,20 +813,30 @@ describe("Game.buildNightInfo", () => {
     expect(game.currentPhase!.info.label).toBe("Night 1 Information");
   });
 
-  it("world count matches expected for 5-player setup", () => {
+  it("world count matches expected for 5-player setup (no Poisoner)", () => {
     const { game } = setupGameWithNightInfo(
-      ["Washerwoman", "Chef", "Empath", "Poisoner", "Imp"],
-      ["Washerwoman", "Chef", "Empath", "Poisoner", "Imp"],
+      ["Washerwoman", "Chef", "Empath", "Spy", "Imp"],
+      ["Washerwoman", "Chef", "Empath", "Spy", "Imp"],
     );
 
     // 6 WW choices × 1 Chef × 1 Empath = 6
     expect(game.countWorlds()).toBe(6);
   });
 
-  it("nightInfoResult is accessible", () => {
+  it("world count matches expected for 5-player setup (with Poisoner)", () => {
     const { game } = setupGameWithNightInfo(
       ["Washerwoman", "Chef", "Empath", "Poisoner", "Imp"],
       ["Washerwoman", "Chef", "Empath", "Poisoner", "Imp"],
+    );
+
+    // 4 poisoner targets × branching info = 78 + 36 + 18 + 6 = 138
+    expect(game.countWorlds()).toBe(138);
+  });
+
+  it("nightInfoResult is accessible", () => {
+    const { game } = setupGameWithNightInfo(
+      ["Washerwoman", "Chef", "Empath", "Spy", "Imp"],
+      ["Washerwoman", "Chef", "Empath", "Spy", "Imp"],
     );
 
     const result = game.nightInfoResult;
@@ -610,10 +846,10 @@ describe("Game.buildNightInfo", () => {
     expect(result!.roleVariableRanges.has("Empath")).toBe(true);
   });
 
-  it("applying Washerwoman observation constrains the night info ZDD", () => {
+  it("applying Washerwoman observation constrains the night info ZDD (no Poisoner)", () => {
     const { game } = setupGameWithNightInfo(
-      ["Washerwoman", "Chef", "Empath", "Poisoner", "Imp"],
-      ["Washerwoman", "Chef", "Empath", "Poisoner", "Imp"],
+      ["Washerwoman", "Chef", "Empath", "Spy", "Imp"],
+      ["Washerwoman", "Chef", "Empath", "Spy", "Imp"],
     );
 
     expect(game.countWorlds()).toBe(6);
@@ -627,45 +863,56 @@ describe("Game.buildNightInfo", () => {
 
   it("inconsistent observation produces empty ZDD", () => {
     const { game } = setupGameWithNightInfo(
-      ["Washerwoman", "Chef", "Empath", "Poisoner", "Imp"],
-      ["Washerwoman", "Chef", "Empath", "Poisoner", "Imp"],
+      ["Washerwoman", "Chef", "Empath", "Spy", "Imp"],
+      ["Washerwoman", "Chef", "Empath", "Spy", "Imp"],
     );
 
-    // Require a nonexistent variable (no WW output has this ID)
     game.applyObservation({ kind: "require-variable", variable: 9999 });
     expect(game.countWorlds()).toBe(0);
   });
 
-  it("wrong Chef count produces empty ZDD", () => {
+  it("wrong Chef count produces empty ZDD (no Poisoner)", () => {
     const { game } = setupGameWithNightInfo(
-      ["Washerwoman", "Chef", "Empath", "Poisoner", "Imp"],
-      ["Washerwoman", "Chef", "Empath", "Poisoner", "Imp"],
+      ["Washerwoman", "Chef", "Empath", "Spy", "Imp"],
+      ["Washerwoman", "Chef", "Empath", "Spy", "Imp"],
     );
 
     const result = game.nightInfoResult!;
-    // True Chef count is 1 (Poisoner+Imp adjacent). Requiring count=0 should fail.
     const wrongVar = findCountInfoVariable(result, "Chef", 0)!;
     game.applyObservation({ kind: "require-variable", variable: wrongVar });
     expect(game.countWorlds()).toBe(0);
   });
 
-  it("correct Chef count keeps worlds alive", () => {
+  it("correct Chef count keeps worlds alive (no Poisoner)", () => {
+    const { game } = setupGameWithNightInfo(
+      ["Washerwoman", "Chef", "Empath", "Spy", "Imp"],
+      ["Washerwoman", "Chef", "Empath", "Spy", "Imp"],
+    );
+
+    const result = game.nightInfoResult!;
+    const correctVar = findCountInfoVariable(result, "Chef", 1)!;
+    game.applyObservation({ kind: "require-variable", variable: correctVar });
+    expect(game.countWorlds()).toBe(6);
+  });
+
+  it("wrong Chef count is valid with Poisoner (poisoner may target Chef)", () => {
     const { game } = setupGameWithNightInfo(
       ["Washerwoman", "Chef", "Empath", "Poisoner", "Imp"],
       ["Washerwoman", "Chef", "Empath", "Poisoner", "Imp"],
     );
 
     const result = game.nightInfoResult!;
-    const correctVar = findCountInfoVariable(result, "Chef", 1)!;
-    game.applyObservation({ kind: "require-variable", variable: correctVar });
-    // Chef is determined, WW still has 6 choices, Empath still 1 → 6
+    // True count is 1, but count=0 is valid when poisoner targets Chef
+    const wrongVar = findCountInfoVariable(result, "Chef", 0)!;
+    game.applyObservation({ kind: "require-variable", variable: wrongVar });
+    // Only the poisoner-targets-Chef branch: WW(6) × 1 × Empath(1) = 6
     expect(game.countWorlds()).toBe(6);
   });
 
   it("undo removes the night info phase", () => {
     const { game } = setupGameWithNightInfo(
-      ["Washerwoman", "Chef", "Empath", "Poisoner", "Imp"],
-      ["Washerwoman", "Chef", "Empath", "Poisoner", "Imp"],
+      ["Washerwoman", "Chef", "Empath", "Spy", "Imp"],
+      ["Washerwoman", "Chef", "Empath", "Spy", "Imp"],
     );
 
     expect(game.phaseCount).toBe(3);
@@ -686,6 +933,17 @@ describe("Game.buildNightInfo", () => {
       "Expected 5 seat assignments, got 2",
     );
   });
+
+  it("passes malfunctioningSeats through to night info builder", () => {
+    const { game } = setupGameWithNightInfo(
+      ["Washerwoman", "Chef", "Empath", "Spy", "Imp"],
+      ["Washerwoman", "Chef", "Empath", "Spy", "Imp"],
+      new Set([2]), // Empath is Drunk
+    );
+
+    // WW(6) × Chef(1) × Empath malfunctioning (3) = 18
+    expect(game.countWorlds()).toBe(18);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -693,29 +951,29 @@ describe("Game.buildNightInfo", () => {
 // ---------------------------------------------------------------------------
 
 describe("end-to-end: distribution → seats → night info", () => {
-  it("5-player TB full pipeline with observations", () => {
+  it("5-player TB full pipeline with observations (no Poisoner)", () => {
     const game = new Game(TROUBLE_BREWING, 5);
 
     // Phase 1: distribution
     game.buildDistribution();
     expect(game.countWorlds()).toBe(858);
 
-    // Find distribution: Washerwoman, Chef, Empath, Poisoner, Imp
+    // Find distribution: Washerwoman, Chef, Empath, Spy, Imp
     const wwIdx = TROUBLE_BREWING.roles.findIndex((r) => r.name === "Washerwoman");
     const chefIdx = TROUBLE_BREWING.roles.findIndex((r) => r.name === "Chef");
     const empIdx = TROUBLE_BREWING.roles.findIndex((r) => r.name === "Empath");
-    const poisIdx = TROUBLE_BREWING.roles.findIndex((r) => r.name === "Poisoner");
+    const spyIdx = TROUBLE_BREWING.roles.findIndex((r) => r.name === "Spy");
     const impIdx = TROUBLE_BREWING.roles.findIndex((r) => r.name === "Imp");
-    const distVars = [wwIdx, chefIdx, empIdx, poisIdx, impIdx].sort((a, b) => a - b);
+    const distVars = [wwIdx, chefIdx, empIdx, spyIdx, impIdx].sort((a, b) => a - b);
 
     // Phase 2: seat assignment
     game.buildSeatAssignment(distVars);
     expect(game.countWorlds()).toBe(120); // 5!
 
-    // Fix assignment: seat 0=WW, 1=Chef, 2=Empath, 3=Poisoner, 4=Imp
+    // Fix assignment: seat 0=WW, 1=Chef, 2=Empath, 3=Spy, 4=Imp
     const selectedRoles = game.selectedRoles!;
     for (let seat = 0; seat < 5; seat++) {
-      const desiredRole = ["Washerwoman", "Chef", "Empath", "Poisoner", "Imp"][seat];
+      const desiredRole = ["Washerwoman", "Chef", "Empath", "Spy", "Imp"][seat];
       const roleIndex = selectedRoles.indexOf(desiredRole);
       game.applyObservation({ kind: "seat-has-role", seat, roleIndex });
     }
@@ -727,7 +985,7 @@ describe("end-to-end: distribution → seats → night info", () => {
       assignments[0], 5, selectedRoles,
     );
     expect(seatAssignment.get(0)).toBe("Washerwoman");
-    expect(seatAssignment.get(3)).toBe("Poisoner");
+    expect(seatAssignment.get(3)).toBe("Spy");
 
     // Phase 3: Night 1 information
     game.buildNightInfo(seatAssignment);
@@ -752,5 +1010,51 @@ describe("end-to-end: distribution → seats → night info", () => {
     const empathVar = findCountInfoVariable(nightResult, "Empath", 1)!;
     expect(worlds[0]).toContain(chefVar);
     expect(worlds[0]).toContain(empathVar);
+  });
+
+  it("5-player TB full pipeline with Poisoner", () => {
+    const game = new Game(TROUBLE_BREWING, 5);
+    game.buildDistribution();
+
+    const wwIdx = TROUBLE_BREWING.roles.findIndex((r) => r.name === "Washerwoman");
+    const chefIdx = TROUBLE_BREWING.roles.findIndex((r) => r.name === "Chef");
+    const empIdx = TROUBLE_BREWING.roles.findIndex((r) => r.name === "Empath");
+    const poisIdx = TROUBLE_BREWING.roles.findIndex((r) => r.name === "Poisoner");
+    const impIdx = TROUBLE_BREWING.roles.findIndex((r) => r.name === "Imp");
+    const distVars = [wwIdx, chefIdx, empIdx, poisIdx, impIdx].sort((a, b) => a - b);
+
+    game.buildSeatAssignment(distVars);
+    const selectedRoles = game.selectedRoles!;
+    for (let seat = 0; seat < 5; seat++) {
+      const desiredRole = ["Washerwoman", "Chef", "Empath", "Poisoner", "Imp"][seat];
+      const roleIndex = selectedRoles.indexOf(desiredRole);
+      game.applyObservation({ kind: "seat-has-role", seat, roleIndex });
+    }
+
+    const assignments = game.zdd.enumerate(game.currentRoot);
+    const seatAssignment = resolveSeatAssignment(assignments[0], 5, selectedRoles);
+
+    game.buildNightInfo(seatAssignment);
+    expect(game.countWorlds()).toBe(138);
+
+    const nightResult = game.nightInfoResult!;
+
+    // Require poisoner targets the Imp (non-info role)
+    const targetImpVar = findPoisonerTargetVariable(nightResult, 4)!;
+    game.applyObservation({ kind: "require-variable", variable: targetImpVar });
+    expect(game.countWorlds()).toBe(6); // All info roles functioning
+
+    // Now require a specific WW output
+    const wwVar = findPairInfoVariable(nightResult, "Washerwoman", 1, 3, "Chef")!;
+    game.applyObservation({ kind: "require-variable", variable: wwVar });
+    expect(game.countWorlds()).toBe(1);
+
+    // Verify world contains poisoner target, WW output, Chef count=1, Empath count=1
+    const worlds = game.zdd.enumerate(game.currentRoot);
+    expect(worlds.length).toBe(1);
+    expect(worlds[0]).toContain(targetImpVar);
+    expect(worlds[0]).toContain(wwVar);
+    expect(worlds[0]).toContain(findCountInfoVariable(nightResult, "Chef", 1)!);
+    expect(worlds[0]).toContain(findCountInfoVariable(nightResult, "Empath", 1)!);
   });
 });
