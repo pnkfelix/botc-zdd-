@@ -11,8 +11,9 @@
  * 4. Kill resolution (depends on Monk protection, Poisoner status)
  * 5. Empath (re-queries with updated death state)
  * 6. Fortune Teller (re-queries with updated death state)
+ * 7. Undertaker (learns executed player's role from preceding day)
  *
- * Out of scope: Ravenkeeper, Undertaker, Butler, Scarlet Woman.
+ * Out of scope: Ravenkeeper, Butler, Scarlet Woman.
  */
 
 import { ZDD, BOTTOM, TOP, type NodeId } from "./zdd.js";
@@ -42,6 +43,16 @@ export interface NightActionConfig {
    * Required if Fortune Teller is in the game.
    */
   redHerringSeat?: Seat;
+  /**
+   * Seats that are already dead at the start of this night.
+   * Dead actors are skipped; dead seats are excluded from targets.
+   */
+  deadSeats?: Set<Seat>;
+  /**
+   * The role of the player executed in the preceding day (null if no execution).
+   * Used by the Undertaker to learn who was executed.
+   */
+  executedRole?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -90,6 +101,14 @@ export interface FortuneTellerN2Output {
   answer: "Yes" | "No";
 }
 
+/** Describes an Undertaker Night 2 output variable. */
+export interface UndertakerOutput {
+  /** The role name shown to the Undertaker. */
+  roleName: string;
+  /** Index of the role in the selected role set. */
+  roleIndex: number;
+}
+
 // ---------------------------------------------------------------------------
 // Result
 // ---------------------------------------------------------------------------
@@ -115,6 +134,8 @@ export interface NightActionResult {
   empathN2Outputs: Map<number, EmpathN2Output>;
   /** Fortune Teller Night 2 outputs. */
   fortuneTellerN2Outputs: Map<number, FortuneTellerN2Output>;
+  /** Undertaker Night 2 outputs. */
+  undertakerOutputs: Map<number, UndertakerOutput>;
 }
 
 // ---------------------------------------------------------------------------
@@ -199,11 +220,12 @@ function getAlignmentOptions(
 /**
  * Compute Empath counts for Night 2, considering who died.
  * Dead players are skipped when finding living neighbors.
+ * allDeadSeats includes both pre-dead seats and the night death.
  */
 function computeEmpathN2Counts(
   config: NightActionConfig,
   empathSeat: Seat,
-  deadSeat: Seat | null,
+  allDeadSeats: Set<Seat>,
 ): number[] {
   const { numPlayers, seatRoles, script } = config;
 
@@ -211,7 +233,7 @@ function computeEmpathN2Counts(
   function findLivingNeighbor(start: Seat, direction: 1 | -1): Seat | null {
     for (let i = 1; i < numPlayers; i++) {
       const candidate = ((start + direction * i) % numPlayers + numPlayers) % numPlayers;
-      if (candidate !== deadSeat) return candidate;
+      if (!allDeadSeats.has(candidate)) return candidate;
     }
     return null; // all dead (shouldn't happen in practice)
   }
@@ -292,6 +314,7 @@ export function buildNightActionZDD(
 ): NightActionResult {
   const { numPlayers, seatRoles, script } = config;
   const baseMalfunctioning = config.malfunctioningSeats ?? new Set<Seat>();
+  const preDeadSeats = config.deadSeats ?? new Set<Seat>();
 
   const poisonerSeat = findSeatByRole(seatRoles, "Poisoner");
   const monkSeat = findSeatByRole(seatRoles, "Monk");
@@ -299,6 +322,7 @@ export function buildNightActionZDD(
   const soldierSeat = findSeatByRole(seatRoles, "Soldier");
   const empathSeat = findSeatByRole(seatRoles, "Empath");
   const ftSeat = findSeatByRole(seatRoles, "Fortune Teller");
+  const undertakerSeat = findSeatByRole(seatRoles, "Undertaker");
 
   let demonSeat: Seat | undefined;
   for (const [seat, role] of seatRoles) {
@@ -308,10 +332,15 @@ export function buildNightActionZDD(
     }
   }
 
-  // Find living minions (for starpass eligibility)
+  // Skip dead actors
+  const poisonerAlive = poisonerSeat !== undefined && !preDeadSeats.has(poisonerSeat);
+  const monkAlive = monkSeat !== undefined && !preDeadSeats.has(monkSeat);
+  const impAlive = impSeat !== undefined && !preDeadSeats.has(impSeat);
+
+  // Find living minions (for starpass eligibility) — exclude dead minions
   const minionSeats: Seat[] = [];
   for (const [seat, role] of seatRoles) {
-    if (getRoleType(role, script) === RoleType.Minion) {
+    if (getRoleType(role, script) === RoleType.Minion && !preDeadSeats.has(seat)) {
       minionSeats.push(seat);
     }
   }
@@ -331,13 +360,14 @@ export function buildNightActionZDD(
   let vid = 0;
 
   // --- Poisoner N2 targets ---
-  const hasPoisoner = poisonerSeat !== undefined;
+  const hasPoisoner = poisonerAlive;
   const poisonerVarStart = vid;
   const poisonerVarIds: number[] = [];
 
   if (hasPoisoner) {
     for (let target = 0; target < numPlayers; target++) {
       if (target === poisonerSeat) continue;
+      if (preDeadSeats.has(target)) continue; // dead players not woken
       variables.push({
         id: vid,
         category: "PoisonerN2",
@@ -351,13 +381,14 @@ export function buildNightActionZDD(
   }
 
   // --- Monk targets ---
-  const hasMonk = monkSeat !== undefined;
+  const hasMonk = monkAlive;
   const monkVarStart = vid;
   const monkVarIds: number[] = [];
 
   if (hasMonk) {
     for (let target = 0; target < numPlayers; target++) {
       if (target === monkSeat) continue;
+      if (preDeadSeats.has(target)) continue; // can't protect dead players
       variables.push({
         id: vid,
         category: "MonkTarget",
@@ -371,7 +402,7 @@ export function buildNightActionZDD(
   }
 
   // --- Imp targets ---
-  const hasImp = impSeat !== undefined;
+  const hasImp = impAlive;
   const impVarStart = vid;
   const impVarIds: number[] = [];
 
@@ -382,6 +413,7 @@ export function buildNightActionZDD(
     for (let target = 0; target < numPlayers; target++) {
       // Imp can target anyone, including self (if starpass possible)
       if (target === impSeat && !starpassPossible) continue;
+      if (preDeadSeats.has(target)) continue; // can't kill dead players
       variables.push({
         id: vid,
         category: "ImpTarget",
@@ -402,6 +434,7 @@ export function buildNightActionZDD(
 
   if (starpassPossible) {
     for (const minionSeat of minionSeats) {
+      // minionSeats already excludes dead minions
       variables.push({
         id: vid,
         category: "StarpassRecipient",
@@ -456,6 +489,31 @@ export function buildNightActionZDD(
     categoryRanges.set("FortuneTellerN2", { start: ftVarStart, count: vid - ftVarStart });
   }
 
+  // --- Undertaker N2 outputs ---
+  const undertakerOutputs = new Map<number, UndertakerOutput>();
+  const hasUndertaker = undertakerSeat !== undefined;
+  // Undertaker only has variables if alive (not pre-dead) AND there was an execution
+  const undertakerActive = hasUndertaker
+    && !preDeadSeats.has(undertakerSeat!)
+    && config.executedRole != null;
+  const undertakerVarStart = vid;
+  const undertakerVarIds: number[] = [];
+
+  if (undertakerActive) {
+    const { selectedRoles } = config;
+    for (let i = 0; i < selectedRoles.length; i++) {
+      variables.push({
+        id: vid,
+        category: "UndertakerN2",
+        description: `Undertaker learns: ${selectedRoles[i]}`,
+      });
+      undertakerOutputs.set(vid, { roleName: selectedRoles[i], roleIndex: i });
+      undertakerVarIds.push(vid);
+      vid++;
+    }
+    categoryRanges.set("UndertakerN2", { start: undertakerVarStart, count: vid - undertakerVarStart });
+  }
+
   const totalVarCount = vid;
 
   // === BUILD ZDD THROUGH CASCADING BRANCHES ===
@@ -499,9 +557,10 @@ export function buildNightActionZDD(
       if (!hasImp) {
         // No Imp — no kill, no death. Just combine choices + info roles.
         const infoRoot = buildInfoRolesForBranch(
-          zdd, config, empathSeat, ftSeat, demonSeat,
-          empathVarIds, ftVarIds, empathN2Outputs, fortuneTellerN2Outputs,
-          n2Malfunctioning, null, // nobody died
+          zdd, config, empathSeat, ftSeat, demonSeat, undertakerSeat,
+          empathVarIds, ftVarIds, undertakerVarIds,
+          empathN2Outputs, fortuneTellerN2Outputs, undertakerOutputs,
+          n2Malfunctioning, null, preDeadSeats, // nobody died
         );
 
         let branchRoot = infoRoot;
@@ -551,9 +610,10 @@ export function buildNightActionZDD(
 
             // After starpass, the recipient is the new demon for FT purposes
             const infoRoot = buildInfoRolesForBranch(
-              zdd, config, empathSeat, ftSeat, recipient,
-              empathVarIds, ftVarIds, empathN2Outputs, fortuneTellerN2Outputs,
-              n2Malfunctioning, deadSeat,
+              zdd, config, empathSeat, ftSeat, recipient, undertakerSeat,
+              empathVarIds, ftVarIds, undertakerVarIds,
+              empathN2Outputs, fortuneTellerN2Outputs, undertakerOutputs,
+              n2Malfunctioning, deadSeat, preDeadSeats,
             );
 
             // Build the set: {poisoner?, monk?, imp, starpassRecipient} × infoRoot
@@ -570,9 +630,10 @@ export function buildNightActionZDD(
         } else {
           // Normal kill (or failed kill)
           const infoRoot = buildInfoRolesForBranch(
-            zdd, config, empathSeat, ftSeat, demonSeat,
-            empathVarIds, ftVarIds, empathN2Outputs, fortuneTellerN2Outputs,
-            n2Malfunctioning, deadSeat,
+            zdd, config, empathSeat, ftSeat, demonSeat, undertakerSeat,
+            empathVarIds, ftVarIds, undertakerVarIds,
+            empathN2Outputs, fortuneTellerN2Outputs, undertakerOutputs,
+            n2Malfunctioning, deadSeat, preDeadSeats,
           );
 
           const choiceVars: number[] = [];
@@ -599,6 +660,7 @@ export function buildNightActionZDD(
     starpassRecipientOutputs,
     empathN2Outputs,
     fortuneTellerN2Outputs,
+    undertakerOutputs,
   };
 }
 
@@ -607,7 +669,7 @@ export function buildNightActionZDD(
 // ---------------------------------------------------------------------------
 
 /**
- * Build info role outputs (Empath, FT) for a specific branch given:
+ * Build info role outputs (Empath, FT, Undertaker) for a specific branch given:
  * - malfunctioning seats (from Night 2 poisoner)
  * - who died (from Imp kill resolution)
  *
@@ -619,12 +681,16 @@ function buildInfoRolesForBranch(
   empathSeat: Seat | undefined,
   ftSeat: Seat | undefined,
   demonSeat: Seat | undefined,
+  undertakerSeat: Seat | undefined,
   empathVarIds: number[],
   ftVarIds: number[],
+  undertakerVarIds: number[],
   empathN2Outputs: Map<number, EmpathN2Output>,
   fortuneTellerN2Outputs: Map<number, FortuneTellerN2Output>,
+  undertakerOutputs: Map<number, UndertakerOutput>,
   n2Malfunctioning: Set<Seat>,
   deadSeat: Seat | null,
+  preDeadSeats: Set<Seat>,
 ): NodeId {
   let root: NodeId = TOP;
 
@@ -632,7 +698,7 @@ function buildInfoRolesForBranch(
   if (empathSeat !== undefined) {
     const empathRoot = buildEmpathN2ForBranch(
       zdd, config, empathSeat, empathVarIds,
-      empathN2Outputs, n2Malfunctioning, deadSeat,
+      empathN2Outputs, n2Malfunctioning, deadSeat, preDeadSeats,
     );
     root = zdd.product(root, empathRoot);
   }
@@ -644,6 +710,15 @@ function buildInfoRolesForBranch(
       fortuneTellerN2Outputs, n2Malfunctioning, deadSeat,
     );
     root = zdd.product(root, ftRoot);
+  }
+
+  // Undertaker Night 2
+  if (undertakerSeat !== undefined && undertakerVarIds.length > 0) {
+    const undertakerRoot = buildUndertakerForBranch(
+      zdd, config, undertakerSeat, undertakerVarIds,
+      undertakerOutputs, n2Malfunctioning, deadSeat, preDeadSeats,
+    );
+    root = zdd.product(root, undertakerRoot);
   }
 
   return root;
@@ -660,15 +735,15 @@ function buildEmpathN2ForBranch(
   empathN2Outputs: Map<number, EmpathN2Output>,
   n2Malfunctioning: Set<Seat>,
   deadSeat: Seat | null,
+  preDeadSeats: Set<Seat>,
 ): NodeId {
+  // If the Empath is pre-dead, no Empath output
+  if (preDeadSeats.has(empathSeat)) {
+    return TOP;
+  }
+
   // If the Empath died this night, no Empath output
   if (deadSeat === empathSeat) {
-    // No Empath output — return TOP (contributes nothing)
-    // But we still need to NOT include any empath variables.
-    // Since the empath variables are allocated, we need to
-    // handle this by not constraining them... but exactlyOne
-    // means we must pick one. If the Empath is dead, the ST
-    // doesn't wake them. We model this by skipping the Empath entirely.
     return TOP;
   }
 
@@ -680,7 +755,10 @@ function buildEmpathN2ForBranch(
   }
 
   // Functioning: compute valid counts based on living neighbors
-  const validCounts = computeEmpathN2Counts(config, empathSeat, deadSeat);
+  // Combine pre-dead seats and the night death into one set
+  const allDeadSeats = new Set(preDeadSeats);
+  if (deadSeat !== null) allDeadSeats.add(deadSeat);
+  const validCounts = computeEmpathN2Counts(config, empathSeat, allDeadSeats);
   const validVarIds = empathVarIds.filter((vid) => {
     const output = empathN2Outputs.get(vid);
     return output !== undefined && validCounts.includes(output.count);
@@ -706,8 +784,10 @@ function buildFTN2ForBranch(
   const { seatRoles, script } = config;
   const redHerringSeat = config.redHerringSeat;
 
-  // If the FT died this night, no FT output
-  if (deadSeat === ftSeat) {
+  const preDeadSeats = config.deadSeats ?? new Set<Seat>();
+
+  // If the FT is pre-dead or died this night, no FT output
+  if (preDeadSeats.has(ftSeat) || deadSeat === ftSeat) {
     return TOP;
   }
 
@@ -742,6 +822,51 @@ function buildFTN2ForBranch(
       if (output.answer === "No") validVarIds.push(vid);
     }
   }
+
+  if (validVarIds.length === 0) return BOTTOM;
+  return exactlyOne(zdd, validVarIds);
+}
+
+/**
+ * Build Undertaker Night 2 output for a specific branch.
+ *
+ * The Undertaker learns the role of the player executed during the preceding day.
+ * - If the Undertaker is dead (pre-dead or died this night): return TOP (no output).
+ * - If no execution: return TOP (Undertaker doesn't wake).
+ * - If malfunctioning: any role is valid (exactlyOne over all undertaker vars).
+ * - If functioning: exactly the executed player's role.
+ */
+function buildUndertakerForBranch(
+  zdd: ZDD,
+  config: NightActionConfig,
+  undertakerSeat: Seat,
+  undertakerVarIds: number[],
+  undertakerOutputs: Map<number, UndertakerOutput>,
+  n2Malfunctioning: Set<Seat>,
+  deadSeat: Seat | null,
+  preDeadSeats: Set<Seat>,
+): NodeId {
+  // If the Undertaker is pre-dead or died this night: no output
+  if (preDeadSeats.has(undertakerSeat) || deadSeat === undertakerSeat) {
+    return TOP;
+  }
+
+  // If no execution: no output
+  const executedRole = config.executedRole;
+  if (!executedRole) {
+    return TOP;
+  }
+
+  // If Undertaker is malfunctioning: any role is valid
+  if (n2Malfunctioning.has(undertakerSeat)) {
+    return exactlyOne(zdd, undertakerVarIds);
+  }
+
+  // Functioning: exactly the executed player's role
+  const validVarIds = undertakerVarIds.filter((vid) => {
+    const output = undertakerOutputs.get(vid);
+    return output !== undefined && output.roleName === executedRole;
+  });
 
   if (validVarIds.length === 0) return BOTTOM;
   return exactlyOne(zdd, validVarIds);
@@ -846,6 +971,17 @@ export function findFortuneTellerN2Variable(
     if (output.playerA === a && output.playerB === b && output.answer === answer) {
       return varId;
     }
+  }
+  return undefined;
+}
+
+/** Find the variable ID for a specific Undertaker output (by role name). */
+export function findUndertakerVariable(
+  result: NightActionResult,
+  roleName: string,
+): number | undefined {
+  for (const [varId, output] of result.undertakerOutputs) {
+    if (output.roleName === roleName) return varId;
   }
   return undefined;
 }
