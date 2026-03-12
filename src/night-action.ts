@@ -296,6 +296,7 @@ export function buildNightActionZDD(
   const poisonerSeat = findSeatByRole(seatRoles, "Poisoner");
   const monkSeat = findSeatByRole(seatRoles, "Monk");
   const impSeat = findSeatByRole(seatRoles, "Imp");
+  const soldierSeat = findSeatByRole(seatRoles, "Soldier");
   const empathSeat = findSeatByRole(seatRoles, "Empath");
   const ftSeat = findSeatByRole(seatRoles, "Fortune Teller");
 
@@ -528,6 +529,13 @@ export function buildNightActionZDD(
           } else if (monkProtectedSeat === impBranch.targetSeat) {
             // Monk protection blocks the kill
             deadSeat = null;
+          } else if (
+            soldierSeat !== undefined &&
+            impBranch.targetSeat === soldierSeat &&
+            !n2Malfunctioning.has(soldierSeat)
+          ) {
+            // Soldier immunity: functioning Soldier is immune to demon kill
+            deadSeat = null;
           } else {
             // Kill succeeds
             deadSeat = impBranch.targetSeat;
@@ -541,8 +549,9 @@ export function buildNightActionZDD(
           for (const spVarId of starpassVarIds) {
             const recipient = starpassRecipientOutputs.get(spVarId)!.recipientSeat;
 
+            // After starpass, the recipient is the new demon for FT purposes
             const infoRoot = buildInfoRolesForBranch(
-              zdd, config, empathSeat, ftSeat, demonSeat,
+              zdd, config, empathSeat, ftSeat, recipient,
               empathVarIds, ftVarIds, empathN2Outputs, fortuneTellerN2Outputs,
               n2Malfunctioning, deadSeat,
             );
@@ -709,18 +718,10 @@ function buildFTN2ForBranch(
     return exactlyOne(zdd, ftVarIds);
   }
 
-  // Functioning: constrain based on demon and red herring
-  // The actual demon seat might have changed due to starpass, but
-  // for simplicity we use the original demon seat (the spec says
-  // the demon seat for FT purposes is whoever is currently the demon).
-  // For starpass, the new Imp is the one that pings. However, this
-  // is complex — for now, we use the original demon seat since starpass
-  // + FT in same night is an edge case, and the new demon identity
-  // takes effect immediately.
-  //
-  // Note: In practice, the Imp died during starpass, so the "demon"
-  // is now the new Imp (the recipient). We'd need to track this.
-  // For now, we use demonSeat as-is — the spec can be refined later.
+  // Functioning: constrain based on demon and red herring.
+  // The demonSeat parameter is the *effective* demon seat for this branch:
+  // in non-starpass branches it's the original Imp, in starpass branches
+  // it's the starpass recipient (who became the new Imp).
 
   const validVarIds: number[] = [];
 

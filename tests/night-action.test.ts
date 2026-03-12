@@ -795,3 +795,288 @@ describe("Edge cases", () => {
     expect(findEmpathN2Variable(result, 3)).toBeUndefined();
   });
 });
+
+// ============================================================================
+// Fortune Teller + Starpass Correction
+// ============================================================================
+
+describe("Fortune Teller + Starpass", () => {
+  // Setup for tests 1-3:
+  // Seats: 0=Fortune Teller, 1=Chef, 2=Soldier, 3=Poisoner, 4=Imp
+  // Red herring at seat 1. Imp starpasses → Poisoner (seat 3) becomes new Imp.
+
+  it("FT pings new demon after starpass", () => {
+    // Test 1: After starpass, seat 3 (former Poisoner, now new Imp) is the demon.
+    // FT picks (3, 2) → seat 3 is demon → Yes
+    const seatRoles = makeSeatRoles("Fortune Teller", "Chef", "Soldier", "Poisoner", "Imp");
+    const zdd = new ZDD();
+    const result = buildNightActionZDD(zdd, makeConfig(seatRoles, { redHerringSeat: 1 }));
+
+    // Require starpass: Imp self-targets, recipient = seat 3
+    const impSelfTarget = findImpTargetVariable(result, 4)!;
+    const spRecipient = findStarpassRecipientVariable(result, 3)!;
+    // Poisoner targets someone other than FT so FT is functioning
+    const poisonerTarget2 = findPoisonerN2TargetVariable(result, 2)!;
+    expect(impSelfTarget).toBeDefined();
+    expect(spRecipient).toBeDefined();
+
+    let branch = zdd.require(result.root, impSelfTarget);
+    branch = zdd.require(branch, spRecipient);
+    branch = zdd.require(branch, poisonerTarget2);
+
+    // FT picks (2, 3): seat 3 is new demon → should ping Yes
+    const ftYes23 = findFortuneTellerN2Variable(result, 2, 3, "Yes");
+    const ftNo23 = findFortuneTellerN2Variable(result, 2, 3, "No");
+
+    expect(ftYes23).toBeDefined();
+    const withYes = zdd.require(branch, ftYes23!);
+    expect(zdd.count(withYes)).toBeGreaterThan(0);
+
+    if (ftNo23 !== undefined) {
+      const withNo = zdd.require(branch, ftNo23);
+      expect(zdd.count(withNo)).toBe(0);
+    }
+  });
+
+  it("FT does NOT ping dead original Imp after starpass", () => {
+    // Test 2: After starpass, seat 4 (dead ex-Imp) is NOT the demon anymore.
+    const seatRoles = makeSeatRoles("Fortune Teller", "Chef", "Soldier", "Poisoner", "Imp");
+    const zdd = new ZDD();
+    const result = buildNightActionZDD(zdd, makeConfig(seatRoles, { redHerringSeat: 1 }));
+
+    const impSelfTarget = findImpTargetVariable(result, 4)!;
+    const spRecipient = findStarpassRecipientVariable(result, 3)!;
+    // Poisoner targets someone other than FT so FT is functioning
+    const poisonerTarget2 = findPoisonerN2TargetVariable(result, 2)!;
+    let branch = zdd.require(result.root, impSelfTarget);
+    branch = zdd.require(branch, spRecipient);
+    branch = zdd.require(branch, poisonerTarget2);
+
+    // FT picks (4, 1): seat 4 is dead ex-Imp (not demon), seat 1 is red herring → Yes (because of RH)
+    const ftYes14 = findFortuneTellerN2Variable(result, 1, 4, "Yes")!;
+    const withYesRH = zdd.require(branch, ftYes14);
+    expect(zdd.count(withYesRH)).toBeGreaterThan(0);
+
+    // FT picks (2, 4): seat 4 is dead ex-Imp (not demon), seat 2 is Soldier → No
+    const ftYes24 = findFortuneTellerN2Variable(result, 2, 4, "Yes");
+    const ftNo24 = findFortuneTellerN2Variable(result, 2, 4, "No");
+
+    if (ftYes24 !== undefined) {
+      const withYes = zdd.require(branch, ftYes24);
+      expect(zdd.count(withYes)).toBe(0);
+    }
+    expect(ftNo24).toBeDefined();
+    const withNo = zdd.require(branch, ftNo24!);
+    expect(zdd.count(withNo)).toBeGreaterThan(0);
+  });
+
+  it("FT pings original demon in non-starpass branches", () => {
+    // Test 3: When Imp kills someone else (not self), FT still pings original Imp seat.
+    const seatRoles = makeSeatRoles("Fortune Teller", "Chef", "Soldier", "Poisoner", "Imp");
+    const zdd = new ZDD();
+    const result = buildNightActionZDD(zdd, makeConfig(seatRoles, { redHerringSeat: 1 }));
+
+    // Imp kills seat 2 (Soldier) — normal kill, no starpass
+    const impTarget2 = findImpTargetVariable(result, 2)!;
+    // Poisoner targets someone other than FT so FT is functioning
+    const poisonerTarget2 = findPoisonerN2TargetVariable(result, 2)!;
+    let branch = zdd.require(result.root, impTarget2);
+    branch = zdd.require(branch, poisonerTarget2);
+
+    // FT picks (0, 4): seat 4 is the original demon → Yes
+    const ftYes04 = findFortuneTellerN2Variable(result, 0, 4, "Yes")!;
+    const ftNo04 = findFortuneTellerN2Variable(result, 0, 4, "No");
+
+    const withYes = zdd.require(branch, ftYes04);
+    expect(zdd.count(withYes)).toBeGreaterThan(0);
+
+    if (ftNo04 !== undefined) {
+      const withNo = zdd.require(branch, ftNo04);
+      expect(zdd.count(withNo)).toBe(0);
+    }
+  });
+});
+
+// ============================================================================
+// Soldier Immunity
+// ============================================================================
+
+describe("Soldier immunity", () => {
+  it("Soldier survives Imp kill when functioning", () => {
+    // Test 4: Imp targets Soldier, Soldier is not poisoned → nobody dies
+    // Seats: 0=Monk, 1=Soldier, 2=Empath, 3=Scarlet Woman, 4=Imp
+    const seatRoles = makeSeatRoles("Monk", "Soldier", "Empath", "Scarlet Woman", "Imp");
+    const zdd = new ZDD();
+    const result = buildNightActionZDD(zdd, makeConfig(seatRoles));
+
+    // Imp targets Soldier (seat 1), Monk protects seat 2
+    const impTarget1 = findImpTargetVariable(result, 1)!;
+    const monkProtects2 = findMonkTargetVariable(result, 2)!;
+    let branch = zdd.require(result.root, impTarget1);
+    branch = zdd.require(branch, monkProtects2);
+
+    expect(zdd.count(branch)).toBeGreaterThan(0);
+
+    // Nobody dies → Empath at seat 2, neighbors: seat 1 (Soldier=good), seat 3 (SW=evil)
+    // → count = 1
+    const empath1 = findEmpathN2Variable(result, 1)!;
+    const withEmpath1 = zdd.require(branch, empath1);
+    expect(zdd.count(withEmpath1)).toBeGreaterThan(0);
+
+    // Count 0 should NOT be valid (SW at seat 3 is evil)
+    const empath0 = findEmpathN2Variable(result, 0)!;
+    const withEmpath0 = zdd.require(branch, empath0);
+    expect(zdd.count(withEmpath0)).toBe(0);
+  });
+
+  it("Soldier dies when poisoned", () => {
+    // Test 5: Poisoner targets Soldier, Imp targets Soldier → Soldier dies
+    // Seats: 0=Monk, 1=Soldier, 2=Empath, 3=Poisoner, 4=Imp
+    const seatRoles = makeSeatRoles("Monk", "Soldier", "Empath", "Poisoner", "Imp");
+    const zdd = new ZDD();
+    const result = buildNightActionZDD(zdd, makeConfig(seatRoles));
+
+    const poisonerTargetSoldier = findPoisonerN2TargetVariable(result, 1)!;
+    const monkProtects2 = findMonkTargetVariable(result, 2)!;
+    const impTarget1 = findImpTargetVariable(result, 1)!;
+
+    let branch = zdd.require(result.root, poisonerTargetSoldier);
+    branch = zdd.require(branch, monkProtects2);
+    branch = zdd.require(branch, impTarget1);
+
+    expect(zdd.count(branch)).toBeGreaterThan(0);
+
+    // Soldier dies (seat 1). Empath at seat 2.
+    // Living left neighbor: seat 0 (Monk=good)
+    // Living right neighbor: seat 3 (Poisoner=evil)
+    // → count = 1
+    const empath1 = findEmpathN2Variable(result, 1)!;
+    const withEmpath1 = zdd.require(branch, empath1);
+    expect(zdd.count(withEmpath1)).toBeGreaterThan(0);
+  });
+
+  it("Soldier immunity with Monk protection (redundant)", () => {
+    // Test 6: Monk protects Soldier, Imp targets Soldier, Soldier is functioning
+    // → nobody dies (both protections active)
+    // Seats: 0=Monk, 1=Soldier, 2=Empath, 3=Scarlet Woman, 4=Imp
+    const seatRoles = makeSeatRoles("Monk", "Soldier", "Empath", "Scarlet Woman", "Imp");
+    const zdd = new ZDD();
+    const result = buildNightActionZDD(zdd, makeConfig(seatRoles));
+
+    const monkProtects1 = findMonkTargetVariable(result, 1)!;
+    const impTarget1 = findImpTargetVariable(result, 1)!;
+    let branch = zdd.require(result.root, monkProtects1);
+    branch = zdd.require(branch, impTarget1);
+
+    // Valid worlds exist (nobody dies)
+    expect(zdd.count(branch)).toBeGreaterThan(0);
+
+    // Empath at seat 2, neighbors: seat 1 (Soldier=good), seat 3 (SW=evil) → count = 1
+    const empath1 = findEmpathN2Variable(result, 1)!;
+    const withEmpath1 = zdd.require(branch, empath1);
+    expect(zdd.count(withEmpath1)).toBeGreaterThan(0);
+  });
+
+  it("Soldier immunity does not apply to starpass", () => {
+    // Test 7: Imp self-targets (starpass). Soldier exists but is irrelevant.
+    // Seats: 0=Monk, 1=Soldier, 2=Empath, 3=Scarlet Woman, 4=Imp
+    const seatRoles = makeSeatRoles("Monk", "Soldier", "Empath", "Scarlet Woman", "Imp");
+    const zdd = new ZDD();
+    const result = buildNightActionZDD(zdd, makeConfig(seatRoles));
+
+    const impSelfTarget = findImpTargetVariable(result, 4)!;
+    const spRecipient = findStarpassRecipientVariable(result, 3)!;
+    let branch = zdd.require(result.root, impSelfTarget);
+    branch = zdd.require(branch, spRecipient);
+
+    // Starpass works: Imp (seat 4) dies
+    expect(zdd.count(branch)).toBeGreaterThan(0);
+
+    // Empath at seat 2: seat 4 (Imp) is dead.
+    // Living left neighbor: seat 1 (Soldier=good)
+    // Living right neighbor: seat 3 (SW=evil, now new Imp)
+    // → count = 1
+    const empath1 = findEmpathN2Variable(result, 1)!;
+    const withEmpath1 = zdd.require(branch, empath1);
+    expect(zdd.count(withEmpath1)).toBeGreaterThan(0);
+  });
+
+  it("branch count with Soldier in minimal no-info-role scenario", () => {
+    // Test 8: Same setup as existing hand-calculated count test
+    // Seats: 0=Monk, 1=Soldier, 2=Virgin, 3=Scarlet Woman, 4=Imp
+    // No Poisoner, no Empath, no FT → only action variables
+    // Monk: 4 targets (1,2,3,4)
+    // Imp: 5 targets (0,1,2,3,4 — starpass to SW)
+    // Non-starpass: 4 Monk × 4 Imp = 16
+    // Starpass: 4 Monk × 1 × 1 = 4
+    // Total = 20 (Soldier doesn't change count, just death outcome)
+    const seatRoles = makeSeatRoles("Monk", "Soldier", "Virgin", "Scarlet Woman", "Imp");
+    const zdd = new ZDD();
+    const result = buildNightActionZDD(zdd, makeConfig(seatRoles));
+
+    expect(zdd.count(result.root)).toBe(20);
+  });
+});
+
+// ============================================================================
+// Combined Interaction Tests
+// ============================================================================
+
+describe("Combined Soldier + Monk + Poisoner interactions", () => {
+  it("Poisoner poisons Soldier, Monk protects Soldier, Imp targets Soldier — Monk saves", () => {
+    // Test 9: Soldier poisoned (immunity lost), but Monk functioning protects.
+    // Nobody dies.
+    // Seats: 0=Monk, 1=Soldier, 2=Empath, 3=Poisoner, 4=Imp
+    const seatRoles = makeSeatRoles("Monk", "Soldier", "Empath", "Poisoner", "Imp");
+    const zdd = new ZDD();
+    const result = buildNightActionZDD(zdd, makeConfig(seatRoles));
+
+    const poisonerTargetSoldier = findPoisonerN2TargetVariable(result, 1)!;
+    const monkProtects1 = findMonkTargetVariable(result, 1)!;
+    const impTarget1 = findImpTargetVariable(result, 1)!;
+
+    let branch = zdd.require(result.root, poisonerTargetSoldier);
+    branch = zdd.require(branch, monkProtects1);
+    branch = zdd.require(branch, impTarget1);
+
+    // Monk protection works → nobody dies
+    expect(zdd.count(branch)).toBeGreaterThan(0);
+
+    // Empath at seat 2, neighbors: seat 1 (Soldier=good), seat 3 (Poisoner=evil) → count = 1
+    const empath1 = findEmpathN2Variable(result, 1)!;
+    const withEmpath1 = zdd.require(branch, empath1);
+    expect(zdd.count(withEmpath1)).toBeGreaterThan(0);
+  });
+
+  it("Poisoner poisons Monk, Monk protects Soldier, Imp targets Soldier — Soldier immunity holds", () => {
+    // Test 10: Monk poisoned (protection fails), Soldier functioning (immunity holds).
+    // Nobody dies due to Soldier immunity.
+    // Seats: 0=Monk, 1=Soldier, 2=Empath, 3=Poisoner, 4=Imp
+    const seatRoles = makeSeatRoles("Monk", "Soldier", "Empath", "Poisoner", "Imp");
+    const zdd = new ZDD();
+    const result = buildNightActionZDD(zdd, makeConfig(seatRoles));
+
+    const poisonerTargetMonk = findPoisonerN2TargetVariable(result, 0)!;
+    const monkProtects1 = findMonkTargetVariable(result, 1)!;
+    const impTarget1 = findImpTargetVariable(result, 1)!;
+
+    let branch = zdd.require(result.root, poisonerTargetMonk);
+    branch = zdd.require(branch, monkProtects1);
+    branch = zdd.require(branch, impTarget1);
+
+    // Monk is poisoned → protection fails
+    // But Soldier is functioning → immunity holds → nobody dies
+    expect(zdd.count(branch)).toBeGreaterThan(0);
+
+    // Empath at seat 2 is not poisoned (Poisoner targets Monk).
+    // Neighbors: seat 1 (Soldier=good), seat 3 (Poisoner=evil) → count = 1
+    const empath1 = findEmpathN2Variable(result, 1)!;
+    const withEmpath1 = zdd.require(branch, empath1);
+    expect(zdd.count(withEmpath1)).toBeGreaterThan(0);
+
+    // Count 0 should NOT be valid
+    const empath0 = findEmpathN2Variable(result, 0)!;
+    const withEmpath0 = zdd.require(branch, empath0);
+    expect(zdd.count(withEmpath0)).toBe(0);
+  });
+});
