@@ -385,7 +385,7 @@ describe("findCountInfoVariable", () => {
     const zdd = new ZDD();
     const result = buildNightInfoZDD(zdd, makeConfig(seatRoles));
 
-    for (let c = 0; c <= 5; c++) {
+    for (let c = 0; c <= 2; c++) {
       const varId = findCountInfoVariable(result, "Chef", c);
       expect(varId).toBeDefined();
     }
@@ -507,7 +507,7 @@ describe("Poisoner target selection", () => {
 
   it("total world count is the sum across all poisoner target branches", () => {
     const { zdd, result } = standardPoisonerSetup();
-    expect(zdd.count(result.root)).toBe(138);
+    expect(zdd.count(result.root)).toBe(120);
   });
 
   it("has poisoner target variables", () => {
@@ -561,8 +561,8 @@ describe("Poisoner target selection", () => {
     const targetVar = findPoisonerTargetVariable(result, 1)!;
     const constrained = zdd.require(result.root, targetVar);
 
-    // WW(6) × Chef malfunctions (6 counts) × Empath(1) = 36
-    expect(zdd.count(constrained)).toBe(36);
+    // WW(6) × Chef malfunctions (3 counts) × Empath(1) = 18
+    expect(zdd.count(constrained)).toBe(18);
   });
 
   it("poisoner targets Empath: Empath can report 0, 1, or 2", () => {
@@ -600,11 +600,11 @@ describe("Poisoner target selection", () => {
     const constrained = zdd.require(result.root, wwVar);
 
     // Target 0 (WW malfunctions): 1 (this specific output) × 1 × 1 = 1
-    // Target 1 (Chef malfunctions): 1 × 6 × 1 = 6
+    // Target 1 (Chef malfunctions): 1 × 3 × 1 = 3
     // Target 2 (Empath malfunctions): 1 × 1 × 3 = 3
     // Target 4 (all function): 1 × 1 × 1 = 1
-    // Total = 1 + 6 + 3 + 1 = 11
-    expect(zdd.count(constrained)).toBe(11);
+    // Total = 1 + 3 + 3 + 1 = 8
+    expect(zdd.count(constrained)).toBe(8);
   });
 
   it("requiring a WW output only valid when malfunctioning forces poisoner on WW", () => {
@@ -704,9 +704,9 @@ describe("malfunctioningSeats (Drunk)", () => {
       malfunctioningSeats: new Set([1]),
     }));
 
-    // WW functioning (6) × Chef malfunctioning (6 counts) × Empath functioning (1)
-    // = 6 × 6 × 1 = 36
-    expect(zdd.count(result.root)).toBe(36);
+    // WW functioning (6) × Chef malfunctioning (3 counts) × Empath functioning (1)
+    // = 6 × 3 × 1 = 18
+    expect(zdd.count(result.root)).toBe(18);
   });
 
   it("malfunctioning WW gets all possible outputs (no Poisoner)", () => {
@@ -737,11 +737,11 @@ describe("malfunctioningSeats (Drunk)", () => {
 
     // Empath always malfunctions (3 options), regardless of poisoner target.
     //   Target 0 (WW): WW malfunctions (78) × Chef(1) × Empath(3) = 234
-    //   Target 1 (Chef): WW(6) × Chef malfunctions (6) × Empath(3) = 108
+    //   Target 1 (Chef): WW(6) × Chef malfunctions (3) × Empath(3) = 54
     //   Target 2 (Empath): WW(6) × Chef(1) × Empath(already malfunctioning, 3) = 18
     //   Target 4 (Imp): WW(6) × Chef(1) × Empath(3) = 18
-    // Total = 234 + 108 + 18 + 18 = 378
-    expect(zdd.count(result.root)).toBe(378);
+    // Total = 234 + 54 + 18 + 18 = 324
+    expect(zdd.count(result.root)).toBe(324);
 
     // Verify Empath is unconstrained even when poisoner targets someone else
     const target4Var = findPoisonerTargetVariable(result, 4)!;
@@ -753,9 +753,9 @@ describe("malfunctioningSeats (Drunk)", () => {
     const count0Var = findCountInfoVariable(result, "Empath", 0)!;
     const withCount0 = zdd.require(result.root, count0Var);
     // Should be valid in all 4 branches (Empath always has 3 options, picking 1)
-    // Target 0: 78×1×1 = 78, Target 1: 6×6×1 = 36, Target 2: 6×1×1 = 6, Target 4: 6×1×1 = 6
-    // Total: 78+36+6+6 = 126
-    expect(zdd.count(withCount0)).toBe(126);
+    // Target 0: 78×1×1 = 78, Target 1: 6×3×1 = 18, Target 2: 6×1×1 = 6, Target 4: 6×1×1 = 6
+    // Total: 78+18+6+6 = 108
+    expect(zdd.count(withCount0)).toBe(108);
   });
 });
 
@@ -831,8 +831,8 @@ describe("Game.buildNightInfo", () => {
       ["Washerwoman", "Chef", "Empath", "Poisoner", "Imp"],
     );
 
-    // 4 poisoner targets × branching info = 78 + 36 + 18 + 6 = 138
-    expect(game.countWorlds()).toBe(138);
+    // 4 poisoner targets × branching info = 78 + 18 + 18 + 6 = 120
+    expect(game.countWorlds()).toBe(120);
   });
 
   it("nightInfoResult is accessible", () => {
@@ -1037,7 +1037,7 @@ describe("end-to-end: distribution → seats → night info", () => {
     const seatAssignment = resolveSeatAssignment(assignments[0], 5, selectedRoles);
 
     game.buildNightInfo(seatAssignment);
-    expect(game.countWorlds()).toBe(138);
+    expect(game.countWorlds()).toBe(120);
 
     const nightResult = game.nightInfoResult!;
 
@@ -1350,8 +1350,8 @@ describe("Fortune Teller", () => {
     // Eligible: 0(FT=good), 1(Chef=good), 2(Empath=good). NOT 3(SW=evil) or 4(Imp=Demon)
     expect(result.redHerringOutputs.size).toBe(3);
 
-    // FT outputs: C(4,2) pairs × 2 answers = 6 × 2 = 12
-    expect(result.fortuneTellerOutputs.size).toBe(12);
+    // FT outputs: C(5,2) pairs × 2 answers = 10 × 2 = 20
+    expect(result.fortuneTellerOutputs.size).toBe(20);
 
     expect(result.roleVariableRanges.has("RedHerring")).toBe(true);
     expect(result.roleVariableRanges.has("Fortune Teller")).toBe(true);
@@ -1441,9 +1441,9 @@ describe("Fortune Teller", () => {
     // Red herring candidates: 0,1,2 (not SW(3) or Imp(4))
     // For a specific red herring at seat 1:
     //   Pinging seats: Imp(4) and red herring(1)
-    //   Pairs with at least one pinging: (1,2), (1,3), (1,4), (2,4), (3,4) → 5 Yes
-    //   Pairs with no pinging: (2,3) → 1 No
-    //   FT choices = 6 (one per pair, answer determined)
+    //   C(5,2)=10 pairs. Pairs with at least one pinging seat: 7 Yes
+    //   Pairs with no pinging: 3 No
+    //   FT choices = 10 (one per pair, answer determined)
     const seatRoles = makeSeatRoles(
       "Fortune Teller", "Chef", "Empath", "Scarlet Woman", "Imp",
     );
@@ -1453,23 +1453,23 @@ describe("Fortune Teller", () => {
     const rhVar = findRedHerringVariable(result, 1)!;
     const constrained = zdd.require(result.root, rhVar);
 
-    // Chef(1 count) × Empath(1 count) × FT(6 determined pairs) = 6
-    expect(zdd.count(constrained)).toBe(6);
+    // Chef(1 count) × Empath(1 count) × FT(10 determined pairs) = 10
+    expect(zdd.count(constrained)).toBe(10);
   });
 
   it("FT total world count (sum across red herring branches)", () => {
     // 5-player: 0=FT, 1=Chef, 2=Empath, 3=SW, 4=Imp
-    // C(4,2)=6 pairs. For each red herring candidate, each pair has exactly 1 valid answer.
-    // So each RH branch has 6 FT choices.
+    // C(5,2)=10 pairs. For each red herring candidate, each pair has exactly 1 valid answer.
+    // So each RH branch has 10 FT choices.
     // RH candidates: 3 (seats 0,1,2 — SW(3) can't register Good, Imp(4) is Demon)
-    // Chef: 1 count × Empath: 1 count × (3 RH × 6 FT) = 18
+    // Chef: 1 count × Empath: 1 count × (3 RH × 10 FT) = 30
     const seatRoles = makeSeatRoles(
       "Fortune Teller", "Chef", "Empath", "Scarlet Woman", "Imp",
     );
     const zdd = new ZDD();
     const result = buildNightInfoZDD(zdd, makeConfig(seatRoles));
 
-    expect(zdd.count(result.root)).toBe(18);
+    expect(zdd.count(result.root)).toBe(30);
   });
 
   it("FT + Poisoner branching: total world count", () => {
@@ -1481,14 +1481,14 @@ describe("Fortune Teller", () => {
     //   Non-FT roles constrained + FT branches per RH
     //
     // Target 0 (FT poisoned):
-    //   Chef(1) × Empath(1) × (3 RH × 12 FT unconstrained) = 36
+    //   Chef(1) × Empath(1) × (3 RH × 20 FT unconstrained) = 60
     // Target 1 (Chef poisoned):
-    //   Chef(6 counts) × Empath(1) × (3 RH × 6 FT constrained) = 108
+    //   Chef(3 counts) × Empath(1) × (3 RH × 10 FT constrained) = 90
     // Target 2 (Empath poisoned):
-    //   Chef(1) × Empath(3 counts) × (3 RH × 6 FT constrained) = 54
+    //   Chef(1) × Empath(3 counts) × (3 RH × 10 FT constrained) = 90
     // Target 4 (Imp poisoned):
-    //   Chef(1) × Empath(1) × (3 RH × 6 FT constrained) = 18
-    // Total = 36 + 108 + 54 + 18 = 216
+    //   Chef(1) × Empath(1) × (3 RH × 10 FT constrained) = 30
+    // Total = 60 + 90 + 90 + 30 = 270
     const seatRoles = makeSeatRoles(
       "Fortune Teller", "Chef", "Empath", "Poisoner", "Imp",
     );
@@ -1497,7 +1497,7 @@ describe("Fortune Teller", () => {
 
     expect(result.poisonerTargetOutputs.size).toBe(4);
     expect(result.redHerringOutputs.size).toBe(3);
-    expect(zdd.count(result.root)).toBe(216);
+    expect(zdd.count(result.root)).toBe(270);
   });
 });
 
