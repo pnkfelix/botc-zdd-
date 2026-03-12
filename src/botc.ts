@@ -128,11 +128,11 @@ export const TROUBLE_BREWING: Script = {
     // Outsiders (4)
     { name: "Butler", type: RoleType.Outsider },
     { name: "Drunk", type: RoleType.Outsider },
-    { name: "Recluse", type: RoleType.Outsider, registersAs: { roleTypes: [RoleType.Outsider, RoleType.Minion, RoleType.Demon], alignments: ["Good", "Evil"] } },
+    { name: "Recluse", type: RoleType.Outsider, registersAs: { roleTypes: [RoleType.Minion, RoleType.Demon], alignments: ["Good", "Evil"] } },
     { name: "Saint", type: RoleType.Outsider },
     // Minions (4)
     { name: "Poisoner", type: RoleType.Minion },
-    { name: "Spy", type: RoleType.Minion, registersAs: { roleTypes: [RoleType.Townsfolk, RoleType.Outsider, RoleType.Minion], alignments: ["Good", "Evil"] } },
+    { name: "Spy", type: RoleType.Minion, registersAs: { roleTypes: [RoleType.Townsfolk, RoleType.Outsider], alignments: ["Good", "Evil"] } },
     { name: "Scarlet Woman", type: RoleType.Minion },
     { name: "Baron", type: RoleType.Minion, distributionModifier: { outsiderDelta: 2, smallGameThreshold: 7, reducedOutsiderDelta: 1 } },
     // Demons (1)

@@ -16,8 +16,9 @@
  *
  * Spy/Recluse registration: roles with `registersAs` metadata can register
  * as different role types and/or alignments to info roles. The Spy can
- * register as Townsfolk/Outsider/Minion and Good/Evil. The Recluse can
- * register as Outsider/Minion/Demon and Good/Evil.
+ * register as Townsfolk/Outsider and Good/Evil. The Recluse can register
+ * as Minion/Demon and Good/Evil. When a role registers as its own type,
+ * only its actual name is valid (handled by the actual-type-match branch).
  *
  * When the Poisoner is in play, poisoner target variables are added before
  * info role variables. The valid info outputs DEPEND on which seat is
@@ -490,11 +491,34 @@ function buildPairRoleInfo(
 
   if (targets.length === 0) return emptyResult();
 
+  // Check whether any target is an actual (non-registration) match.
+  // If all targets come purely from registersAs, showing them is a
+  // ST choice and "not showing" is equally valid.
+  const hasActualTarget = targets.some(({ seat }) => {
+    const role = config.seatRoles.get(seat);
+    if (!role) return false;
+    const roleObj = getRoleObj(role, config.script);
+    return roleObj !== undefined && roleObj.type === targetType;
+  });
+
   const { numPlayers } = config;
   const variables: NightInfoVariable[] = [];
   const pairOutputs = new Map<number, PairInfoOutput>();
   const varIds: number[] = [];
   let vid = nextVarId;
+
+  // Librarian: when no actual outsiders exist but registration-only
+  // targets do, the ST may choose not to have them register as outsider,
+  // yielding "No Outsiders".
+  if (infoRoleName === "Librarian" && !hasActualTarget) {
+    variables.push({
+      id: vid,
+      infoRole: infoRoleName,
+      description: "No Outsiders in play",
+    });
+    varIds.push(vid);
+    vid++;
+  }
 
   // Use a Set to deduplicate (playerA, playerB, roleName) triples
   const seen = new Set<string>();

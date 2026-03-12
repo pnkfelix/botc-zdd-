@@ -1115,7 +1115,43 @@ describe("Spy registration", () => {
     expect(spyRoles.size).toBe(4); // Butler, Drunk, Recluse, Saint
   });
 
-  it("Spy expands Investigator outputs (all 4 Minion role names, not just Spy)", () => {
+  it("Librarian includes 'No Outsiders' when Spy is the only outsider-capable player", () => {
+    // Seats: 0=Librarian, 1=Chef, 2=Empath, 3=Spy, 4=Imp
+    // No actual outsiders. Spy can register as Outsider but it's optional.
+    const seatRoles = makeSeatRoles(
+      "Librarian", "Chef", "Empath", "Spy", "Imp",
+    );
+    const zdd = new ZDD();
+    const result = buildNightInfoZDD(zdd, makeConfig(seatRoles));
+
+    const libRange = result.roleVariableRanges.get("Librarian");
+    expect(libRange).toBeDefined();
+
+    // Collect all Librarian outputs
+    const libPairs = [];
+    let noOutsidersVar: number | undefined;
+    for (let vid = libRange!.start; vid < libRange!.start + libRange!.count; vid++) {
+      const output = result.pairOutputs.get(vid);
+      if (output) {
+        libPairs.push(output);
+      } else {
+        // This is the "No Outsiders" variable
+        const v = result.variables.find((v) => v.id === vid);
+        if (v?.description === "No Outsiders in play") noOutsidersVar = vid;
+      }
+    }
+
+    // "No Outsiders" must be present as a valid ST choice
+    expect(noOutsidersVar).toBeDefined();
+
+    // Spy(seat 3) registers as Outsider: 4 outsider roles × decoys 1,2,4 = 12 pair outputs
+    expect(libPairs.length).toBe(12);
+
+    // Total Librarian outputs = 12 pair + 1 "No Outsiders" = 13
+    expect(libRange!.count).toBe(13);
+  });
+
+  it("Spy as actual Minion only shows 'Spy' to Investigator (no misregistration expansion)", () => {
     // Seats: 0=Investigator, 1=Chef, 2=Empath, 3=Spy, 4=Imp
     const seatRoles = makeSeatRoles(
       "Investigator", "Chef", "Empath", "Spy", "Imp",
@@ -1126,21 +1162,19 @@ describe("Spy registration", () => {
     const invRange = result.roleVariableRanges.get("Investigator");
     expect(invRange).toBeDefined();
 
-    // Spy(seat 3) is actually a Minion AND has registersAs including Minion
-    // registersAs expands: can be named as any of 4 Minion roles
-    // Decoys: 1, 2, 4 → 3 × 4 = 12 outputs
+    // Spy(seat 3) is actually a Minion — only its actual name "Spy" is valid.
+    // Spy does NOT have may_misregister_as(Minion), so no expansion to other
+    // Minion role names. Decoys: 1, 2, 4 → 3 outputs.
     const invPairs = [];
     for (let vid = invRange!.start; vid < invRange!.start + invRange!.count; vid++) {
       const output = result.pairOutputs.get(vid);
       if (output) invPairs.push(output);
     }
-    expect(invPairs.length).toBe(12);
+    expect(invPairs.length).toBe(3);
 
     const namedRoles = new Set(invPairs.map((p) => p.namedRole));
+    expect(namedRoles.size).toBe(1);
     expect(namedRoles).toContain("Spy");
-    expect(namedRoles).toContain("Poisoner");
-    expect(namedRoles).toContain("Scarlet Woman");
-    expect(namedRoles).toContain("Baron");
   });
 
   it("Spy adjacent to evil: Chef has 2 valid counts (evil vs. good registration)", () => {
@@ -1248,7 +1282,7 @@ describe("Recluse registration", () => {
     expect(recluseRoles).toContain("Baron");
   });
 
-  it("Recluse expands Librarian outputs (all 4 Outsider role names)", () => {
+  it("Recluse as actual Outsider only shows 'Recluse' to Librarian (no misregistration expansion)", () => {
     // Seats: 0=Librarian, 1=Chef, 2=Recluse, 3=Scarlet Woman, 4=Imp
     const seatRoles = makeSeatRoles(
       "Librarian", "Chef", "Recluse", "Scarlet Woman", "Imp",
@@ -1265,12 +1299,14 @@ describe("Recluse registration", () => {
       if (output) libPairs.push(output);
     }
 
-    // Recluse(seat 2): actual Outsider → "Recluse" + registersAs includes Outsider → all 4
-    // decoys: 1, 3, 4 → 3 per role × 4 roles = 12 outputs
-    expect(libPairs.length).toBe(12);
+    // Recluse(seat 2): actual Outsider — only its actual name "Recluse" is valid.
+    // Recluse does NOT have may_misregister_as(Outsider), so no expansion.
+    // decoys: 1, 3, 4 → 3 outputs
+    expect(libPairs.length).toBe(3);
 
     const roleNames = new Set(libPairs.map((p) => p.namedRole));
-    expect(roleNames.size).toBe(4); // Butler, Drunk, Recluse, Saint
+    expect(roleNames.size).toBe(1);
+    expect(roleNames).toContain("Recluse");
   });
 
   it("Recluse CANNOT register as Townsfolk (no effect on Washerwoman)", () => {
