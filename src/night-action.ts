@@ -13,7 +13,9 @@
  * 6. Fortune Teller (re-queries with updated death state)
  * 7. Undertaker (learns executed player's role from preceding day)
  *
- * Out of scope: Ravenkeeper, Butler, Scarlet Woman.
+ * 8. Ravenkeeper (death-triggered: if killed by Imp, choose a player to learn their role)
+ *
+ * Out of scope: Butler.
  */
 
 import { ZDD, BOTTOM, TOP, type NodeId } from "./zdd.js";
@@ -109,6 +111,19 @@ export interface UndertakerOutput {
   roleIndex: number;
 }
 
+/** Describes a Ravenkeeper target choice variable. */
+export interface RavenkeeperTargetOutput {
+  targetSeat: Seat;
+}
+
+/** Describes a Ravenkeeper role-learned output variable. */
+export interface RavenkeeperRoleOutput {
+  /** The role name shown to the Ravenkeeper. */
+  roleName: string;
+  /** Index of the role in the selected role set. */
+  roleIndex: number;
+}
+
 // ---------------------------------------------------------------------------
 // Result
 // ---------------------------------------------------------------------------
@@ -136,6 +151,10 @@ export interface NightActionResult {
   fortuneTellerN2Outputs: Map<number, FortuneTellerN2Output>;
   /** Undertaker Night 2 outputs. */
   undertakerOutputs: Map<number, UndertakerOutput>;
+  /** Ravenkeeper target outputs. */
+  ravenkeeperTargetOutputs: Map<number, RavenkeeperTargetOutput>;
+  /** Ravenkeeper role-learned outputs. */
+  ravenkeeperRoleOutputs: Map<number, RavenkeeperRoleOutput>;
 }
 
 // ---------------------------------------------------------------------------
@@ -323,6 +342,7 @@ export function buildNightActionZDD(
   const empathSeat = findSeatByRole(seatRoles, "Empath");
   const ftSeat = findSeatByRole(seatRoles, "Fortune Teller");
   const undertakerSeat = findSeatByRole(seatRoles, "Undertaker");
+  const ravenkeeperSeat = findSeatByRole(seatRoles, "Ravenkeeper");
 
   let demonSeat: Seat | undefined;
   for (const [seat, role] of seatRoles) {
@@ -514,6 +534,50 @@ export function buildNightActionZDD(
     categoryRanges.set("UndertakerN2", { start: undertakerVarStart, count: vid - undertakerVarStart });
   }
 
+  // --- Ravenkeeper outputs ---
+  // Ravenkeeper fires when killed by Imp this night (not starpass, not already dead).
+  // Variables are allocated maximally; branches where RK doesn't fire produce TOP (no RK vars).
+  const ravenkeeperTargetOutputs = new Map<number, RavenkeeperTargetOutput>();
+  const ravenkeeperRoleOutputs = new Map<number, RavenkeeperRoleOutput>();
+  const hasRavenkeeper = ravenkeeperSeat !== undefined;
+  // RK must be alive at start of night to potentially fire
+  const ravenkeeperCanFire = hasRavenkeeper && !preDeadSeats.has(ravenkeeperSeat!);
+  const rkTargetVarStart = vid;
+  const rkTargetVarIds: number[] = [];
+
+  if (ravenkeeperCanFire) {
+    // Target choice: RK picks any player (including self) to learn their role
+    for (let target = 0; target < numPlayers; target++) {
+      variables.push({
+        id: vid,
+        category: "RavenkeeperTarget",
+        description: `Ravenkeeper chooses to learn seat ${target}`,
+      });
+      ravenkeeperTargetOutputs.set(vid, { targetSeat: target });
+      rkTargetVarIds.push(vid);
+      vid++;
+    }
+    categoryRanges.set("RavenkeeperTarget", { start: rkTargetVarStart, count: vid - rkTargetVarStart });
+  }
+
+  const rkRoleVarStart = vid;
+  const rkRoleVarIds: number[] = [];
+
+  if (ravenkeeperCanFire) {
+    const { selectedRoles } = config;
+    for (let i = 0; i < selectedRoles.length; i++) {
+      variables.push({
+        id: vid,
+        category: "RavenkeeperRole",
+        description: `Ravenkeeper learns role: ${selectedRoles[i]}`,
+      });
+      ravenkeeperRoleOutputs.set(vid, { roleName: selectedRoles[i], roleIndex: i });
+      rkRoleVarIds.push(vid);
+      vid++;
+    }
+    categoryRanges.set("RavenkeeperRole", { start: rkRoleVarStart, count: vid - rkRoleVarStart });
+  }
+
   const totalVarCount = vid;
 
   // === BUILD ZDD THROUGH CASCADING BRANCHES ===
@@ -557,9 +621,10 @@ export function buildNightActionZDD(
       if (!hasImp) {
         // No Imp — no kill, no death. Just combine choices + info roles.
         const infoRoot = buildInfoRolesForBranch(
-          zdd, config, empathSeat, ftSeat, demonSeat, undertakerSeat,
-          empathVarIds, ftVarIds, undertakerVarIds,
+          zdd, config, empathSeat, ftSeat, demonSeat, undertakerSeat, ravenkeeperSeat,
+          empathVarIds, ftVarIds, undertakerVarIds, rkTargetVarIds, rkRoleVarIds,
           empathN2Outputs, fortuneTellerN2Outputs, undertakerOutputs,
+          ravenkeeperTargetOutputs, ravenkeeperRoleOutputs,
           n2Malfunctioning, null, preDeadSeats, // nobody died
         );
 
@@ -604,15 +669,35 @@ export function buildNightActionZDD(
 
         // Handle starpass sub-branches
         if (isStarpass && impFunctioning) {
-          // Starpass: need to pick a recipient
-          for (const spVarId of starpassVarIds) {
+          // Starpass: determine recipient(s).
+          // RAW: if a functioning (sober+healthy) Scarlet Woman exists, she MUST
+          // become the new Imp — no choice among minions.
+          let eligibleStarpassVarIds: number[];
+
+          // Check for a functioning SW among starpass recipients
+          const swRecipientVarId = starpassVarIds.find((spVid) => {
+            const recipientSeat = starpassRecipientOutputs.get(spVid)!.recipientSeat;
+            const recipientRole = seatRoles.get(recipientSeat);
+            return recipientRole === "Scarlet Woman" && !n2Malfunctioning.has(recipientSeat);
+          });
+
+          if (swRecipientVarId !== undefined) {
+            // Functioning SW exists → she is the only valid recipient
+            eligibleStarpassVarIds = [swRecipientVarId];
+          } else {
+            // No functioning SW → any living minion is eligible
+            eligibleStarpassVarIds = starpassVarIds;
+          }
+
+          for (const spVarId of eligibleStarpassVarIds) {
             const recipient = starpassRecipientOutputs.get(spVarId)!.recipientSeat;
 
             // After starpass, the recipient is the new demon for FT purposes
             const infoRoot = buildInfoRolesForBranch(
-              zdd, config, empathSeat, ftSeat, recipient, undertakerSeat,
-              empathVarIds, ftVarIds, undertakerVarIds,
+              zdd, config, empathSeat, ftSeat, recipient, undertakerSeat, ravenkeeperSeat,
+              empathVarIds, ftVarIds, undertakerVarIds, rkTargetVarIds, rkRoleVarIds,
               empathN2Outputs, fortuneTellerN2Outputs, undertakerOutputs,
+              ravenkeeperTargetOutputs, ravenkeeperRoleOutputs,
               n2Malfunctioning, deadSeat, preDeadSeats,
             );
 
@@ -630,9 +715,10 @@ export function buildNightActionZDD(
         } else {
           // Normal kill (or failed kill)
           const infoRoot = buildInfoRolesForBranch(
-            zdd, config, empathSeat, ftSeat, demonSeat, undertakerSeat,
-            empathVarIds, ftVarIds, undertakerVarIds,
+            zdd, config, empathSeat, ftSeat, demonSeat, undertakerSeat, ravenkeeperSeat,
+            empathVarIds, ftVarIds, undertakerVarIds, rkTargetVarIds, rkRoleVarIds,
             empathN2Outputs, fortuneTellerN2Outputs, undertakerOutputs,
+            ravenkeeperTargetOutputs, ravenkeeperRoleOutputs,
             n2Malfunctioning, deadSeat, preDeadSeats,
           );
 
@@ -661,6 +747,8 @@ export function buildNightActionZDD(
     empathN2Outputs,
     fortuneTellerN2Outputs,
     undertakerOutputs,
+    ravenkeeperTargetOutputs,
+    ravenkeeperRoleOutputs,
   };
 }
 
@@ -669,7 +757,7 @@ export function buildNightActionZDD(
 // ---------------------------------------------------------------------------
 
 /**
- * Build info role outputs (Empath, FT, Undertaker) for a specific branch given:
+ * Build info role outputs (Empath, FT, Undertaker, Ravenkeeper) for a specific branch given:
  * - malfunctioning seats (from Night 2 poisoner)
  * - who died (from Imp kill resolution)
  *
@@ -682,12 +770,17 @@ function buildInfoRolesForBranch(
   ftSeat: Seat | undefined,
   demonSeat: Seat | undefined,
   undertakerSeat: Seat | undefined,
+  ravenkeeperSeat: Seat | undefined,
   empathVarIds: number[],
   ftVarIds: number[],
   undertakerVarIds: number[],
+  rkTargetVarIds: number[],
+  rkRoleVarIds: number[],
   empathN2Outputs: Map<number, EmpathN2Output>,
   fortuneTellerN2Outputs: Map<number, FortuneTellerN2Output>,
   undertakerOutputs: Map<number, UndertakerOutput>,
+  ravenkeeperTargetOutputs: Map<number, RavenkeeperTargetOutput>,
+  ravenkeeperRoleOutputs: Map<number, RavenkeeperRoleOutput>,
   n2Malfunctioning: Set<Seat>,
   deadSeat: Seat | null,
   preDeadSeats: Set<Seat>,
@@ -719,6 +812,16 @@ function buildInfoRolesForBranch(
       undertakerOutputs, n2Malfunctioning, deadSeat, preDeadSeats,
     );
     root = zdd.product(root, undertakerRoot);
+  }
+
+  // Ravenkeeper: fires only if killed by Imp this night
+  if (ravenkeeperSeat !== undefined && rkTargetVarIds.length > 0) {
+    const rkRoot = buildRavenkeeperForBranch(
+      zdd, config, ravenkeeperSeat, rkTargetVarIds, rkRoleVarIds,
+      ravenkeeperTargetOutputs, ravenkeeperRoleOutputs,
+      n2Malfunctioning, deadSeat, preDeadSeats,
+    );
+    root = zdd.product(root, rkRoot);
   }
 
   return root;
@@ -872,6 +975,67 @@ function buildUndertakerForBranch(
   return exactlyOne(zdd, validVarIds);
 }
 
+/**
+ * Build Ravenkeeper output for a specific branch.
+ *
+ * The Ravenkeeper fires when killed by the Imp this night (deadSeat === ravenkeeperSeat).
+ * When fired, they choose a player and learn that player's role.
+ * - If RK is pre-dead or NOT killed this night: return TOP (no output).
+ * - If malfunctioning: target is any player, role learned can be any role.
+ * - If functioning: target is any player, role learned is exactly the target's true role.
+ *
+ * The output is a cross-product of target choice × role learned, constrained per target.
+ */
+function buildRavenkeeperForBranch(
+  zdd: ZDD,
+  config: NightActionConfig,
+  ravenkeeperSeat: Seat,
+  rkTargetVarIds: number[],
+  rkRoleVarIds: number[],
+  ravenkeeperTargetOutputs: Map<number, RavenkeeperTargetOutput>,
+  ravenkeeperRoleOutputs: Map<number, RavenkeeperRoleOutput>,
+  n2Malfunctioning: Set<Seat>,
+  deadSeat: Seat | null,
+  preDeadSeats: Set<Seat>,
+): NodeId {
+  // RK only fires if killed this night
+  if (preDeadSeats.has(ravenkeeperSeat) || deadSeat !== ravenkeeperSeat) {
+    return TOP;
+  }
+
+  const { seatRoles } = config;
+  const rkMalfunctioning = n2Malfunctioning.has(ravenkeeperSeat);
+
+  if (rkMalfunctioning) {
+    // Malfunctioning: any target × any role
+    const targetPart = exactlyOne(zdd, rkTargetVarIds);
+    const rolePart = exactlyOne(zdd, rkRoleVarIds);
+    return zdd.product(targetPart, rolePart);
+  }
+
+  // Functioning: for each target, the role learned is exactly the target's true role.
+  // Build union of: {targetVar(t)} × {roleVar(trueRole(t))} for each target t
+  let rkRoot: NodeId = BOTTOM;
+
+  for (const tVid of rkTargetVarIds) {
+    const targetOutput = ravenkeeperTargetOutputs.get(tVid)!;
+    const targetRole = seatRoles.get(targetOutput.targetSeat);
+    if (targetRole === undefined) continue;
+
+    // Find the role variable matching the target's true role
+    const roleVid = rkRoleVarIds.find((rv) => {
+      const ro = ravenkeeperRoleOutputs.get(rv);
+      return ro !== undefined && ro.roleName === targetRole;
+    });
+    if (roleVid === undefined) continue;
+
+    const branchSet = zdd.singleSet([tVid, roleVid].sort((a, b) => a - b));
+    rkRoot = zdd.union(rkRoot, branchSet);
+  }
+
+  return rkRoot;
+}
+
 // ---------------------------------------------------------------------------
 // Observation handler for NightAction phase
 // ---------------------------------------------------------------------------
@@ -981,6 +1145,28 @@ export function findUndertakerVariable(
   roleName: string,
 ): number | undefined {
   for (const [varId, output] of result.undertakerOutputs) {
+    if (output.roleName === roleName) return varId;
+  }
+  return undefined;
+}
+
+/** Find the variable ID for a specific Ravenkeeper target. */
+export function findRavenkeeperTargetVariable(
+  result: NightActionResult,
+  targetSeat: Seat,
+): number | undefined {
+  for (const [varId, output] of result.ravenkeeperTargetOutputs) {
+    if (output.targetSeat === targetSeat) return varId;
+  }
+  return undefined;
+}
+
+/** Find the variable ID for a specific Ravenkeeper role-learned output. */
+export function findRavenkeeperRoleVariable(
+  result: NightActionResult,
+  roleName: string,
+): number | undefined {
+  for (const [varId, output] of result.ravenkeeperRoleOutputs) {
     if (output.roleName === roleName) return varId;
   }
   return undefined;
