@@ -502,72 +502,34 @@ describe("Saint", () => {
 // Slayer Tests
 // ============================================================================
 
-describe("Slayer", () => {
-  // Test 15: Slayer shoots Imp (functioning) → Imp dies
-  it("functioning Slayer kills the Imp", () => {
-    // 5 players: 0=Slayer, 1=Chef, 2=Soldier, 3=Scarlet Woman, 4=Imp
+describe("Slayer (ZDD-based)", () => {
+  // Test 15: Functioning Slayer → Imp must die (only outcome)
+  it("functioning Slayer shooting Imp: only (target=Imp, died=true) is legal", () => {
     const { game } = buildGameThroughNight1(
       "Slayer", "Chef", "Soldier", "Scarlet Woman", "Imp",
     );
 
-    const result = game.slayerShot(0, 4); // Slayer shoots Imp
+    const dayResult = game.recordDay(null, { slayerShot: { slayerSeat: 0 } });
 
-    expect(result.targetDied).toBe(true);
-    expect(result.slayerSeat).toBe(0);
-    expect(result.targetSeat).toBe(4);
-    expect(game.deadSeats.has(4)).toBe(true);
+    expect(dayResult.slayerShotOutputs).toBeDefined();
+
+    // Find the variable for targeting Imp (seat 4)
+    const diedVar = game.findSlayerShotVariable(4, true);
+    const survivedVar = game.findSlayerShotVariable(4, false);
+
+    // Imp must die — only "died" outcome is legal
+    expect(diedVar).toBeDefined();
+    expect(survivedVar).toBeUndefined();
+
+    // Requiring this variable should yield valid worlds
+    const root = game.currentRoot;
+    const withDied = game.zdd.require(root, diedVar!);
+    expect(game.zdd.count(withDied)).toBeGreaterThan(0);
   });
 
-  // Test 16: Slayer shoots Imp (poisoned) → no kill
-  it("malfunctioning Slayer does not kill the Imp", () => {
-    const { game } = buildGameThroughNight1(
-      "Slayer", "Chef", "Soldier", "Scarlet Woman", "Imp",
-    );
-
-    const result = game.slayerShot(0, 4, new Set([0])); // Slayer is poisoned
-
-    expect(result.targetDied).toBe(false);
-    expect(game.deadSeats.has(4)).toBe(false);
-  });
-
-  // Test 17: Slayer shoots non-Demon → no kill
-  it("Slayer shooting a non-Demon does not kill", () => {
-    const { game } = buildGameThroughNight1(
-      "Slayer", "Chef", "Soldier", "Scarlet Woman", "Imp",
-    );
-
-    const result = game.slayerShot(0, 1); // Slayer shoots Chef
-
-    expect(result.targetDied).toBe(false);
-    expect(game.deadSeats.has(1)).toBe(false);
-  });
-
-  // Test 18: Slayer already used ability → inactive
-  it("Slayer cannot use ability twice", () => {
-    const { game } = buildGameThroughNight1(
-      "Slayer", "Chef", "Soldier", "Scarlet Woman", "Imp",
-    );
-
-    game.slayerShot(0, 1); // First shot (misses)
-    expect(game.slayerUsed).toBe(true);
-
-    expect(() => game.slayerShot(0, 4)).toThrow("already been used");
-  });
-
-  // Test 19: Dead Slayer cannot shoot
-  it("dead Slayer cannot use ability", () => {
-    const { game } = buildGameThroughNight1(
-      "Slayer", "Chef", "Soldier", "Scarlet Woman", "Imp",
-    );
-
-    game.recordNightDeath(0); // Slayer died overnight
-
-    expect(() => game.slayerShot(0, 4)).toThrow("dead");
-  });
-
-  // Test 20: Slayer uses malfunctioning from game state
-  it("Slayer uses game's malfunctioning state when not overridden", () => {
-    // Create game with Slayer malfunctioning from Drunk status
+  // Test 16: Malfunctioning Slayer → all targets survive
+  it("malfunctioning Slayer: all targets have only (died=false) outcome", () => {
+    // Build game with Slayer malfunctioning
     const game = new Game(TROUBLE_BREWING, 5);
     game.buildDistribution();
     const dists = game.zdd.enumerate(game.currentRoot);
@@ -590,33 +552,123 @@ describe("Slayer", () => {
 
     game.buildSeatAssignment(matchedDist!);
     const seatRoles = makeSeatRoles(...targetRoles);
-    // Slayer at seat 0 is malfunctioning
-    game.buildNightInfo(seatRoles, new Set([0]));
+    game.buildNightInfo(seatRoles, new Set([0])); // Slayer malfunctioning
 
-    const result = game.slayerShot(0, 4); // Slayer shoots Imp but malfunctioning
-    expect(result.targetDied).toBe(false);
+    const dayResult = game.recordDay(null, { slayerShot: { slayerSeat: 0 } });
+    expect(dayResult.slayerShotOutputs).toBeDefined();
+
+    // Imp (seat 4): only survived outcome (Slayer malfunctioning)
+    expect(game.findSlayerShotVariable(4, true)).toBeUndefined();
+    expect(game.findSlayerShotVariable(4, false)).toBeDefined();
+
+    // All other targets also only have survived
+    for (let t = 0; t < 5; t++) {
+      expect(game.findSlayerShotVariable(t, true)).toBeUndefined();
+    }
   });
 
-  // Test 21: Slayer shoots Recluse — default (no registration) → no kill
-  it("Slayer shooting Recluse without registration override does not kill", () => {
-    // 6 players: 0=Slayer, 1=Chef, 2=Recluse, 3=Scarlet Woman, 4=Soldier, 5=Imp
+  // Test 17: Slayer shoots non-Demon → no kill outcome
+  it("non-Demon targets only have (died=false) outcome", () => {
+    const { game } = buildGameThroughNight1(
+      "Slayer", "Chef", "Soldier", "Scarlet Woman", "Imp",
+    );
+
+    game.recordDay(null, { slayerShot: { slayerSeat: 0 } });
+
+    // Chef (seat 1): only survived
+    expect(game.findSlayerShotVariable(1, true)).toBeUndefined();
+    expect(game.findSlayerShotVariable(1, false)).toBeDefined();
+  });
+
+  // Test 18: Slayer already used → error
+  it("Slayer cannot use ability twice", () => {
+    const { game } = buildGameThroughNight1(
+      "Slayer", "Chef", "Soldier", "Scarlet Woman", "Imp",
+    );
+
+    game.recordDay(null, { slayerShot: { slayerSeat: 0 } });
+    expect(game.slayerUsed).toBe(true);
+
+    expect(() =>
+      game.recordDay(null, { slayerShot: { slayerSeat: 0 } }),
+    ).toThrow("already been used");
+  });
+
+  // Test 19: Dead Slayer cannot shoot
+  it("dead Slayer cannot use ability", () => {
+    const { game } = buildGameThroughNight1(
+      "Slayer", "Chef", "Soldier", "Scarlet Woman", "Imp",
+    );
+
+    game.recordNightDeath(0);
+
+    expect(() =>
+      game.recordDay(null, { slayerShot: { slayerSeat: 0 } }),
+    ).toThrow("dead");
+  });
+
+  // Test 20: Recluse → both outcomes are legal (ST decides registration)
+  it("Recluse target has both (died=true) and (died=false) outcomes", () => {
     const { game } = buildGameThroughNight1(
       "Slayer", "Chef", "Recluse", "Scarlet Woman", "Soldier", "Imp",
     );
 
-    const result = game.slayerShot(0, 2); // Slayer shoots Recluse
-    expect(result.targetDied).toBe(false);
-    expect(game.deadSeats.has(2)).toBe(false);
+    game.recordDay(null, { slayerShot: { slayerSeat: 0 } });
+
+    // Recluse (seat 2): both outcomes are legal
+    const diedVar = game.findSlayerShotVariable(2, true);
+    const survivedVar = game.findSlayerShotVariable(2, false);
+    expect(diedVar).toBeDefined();
+    expect(survivedVar).toBeDefined();
+
+    // Both can be required in the ZDD
+    const root = game.currentRoot;
+    expect(game.zdd.count(game.zdd.require(root, diedVar!))).toBeGreaterThan(0);
+    expect(game.zdd.count(game.zdd.require(root, survivedVar!))).toBeGreaterThan(0);
   });
 
-  // Test 22: Slayer shoots Recluse with targetRegistersAsDemon → kill
-  it("Slayer kills Recluse when ST decides Recluse registers as Demon", () => {
+  // Test 21: Recluse branching — requiring one outcome excludes the other
+  it("requiring one Recluse outcome excludes the other", () => {
     const { game } = buildGameThroughNight1(
       "Slayer", "Chef", "Recluse", "Scarlet Woman", "Soldier", "Imp",
     );
 
-    const result = game.slayerShot(0, 2, { targetRegistersAsDemon: true });
-    expect(result.targetDied).toBe(true);
-    expect(game.deadSeats.has(2)).toBe(true);
+    game.recordDay(null, { slayerShot: { slayerSeat: 0 } });
+
+    const diedVar = game.findSlayerShotVariable(2, true)!;
+    const survivedVar = game.findSlayerShotVariable(2, false)!;
+
+    // Requiring "died" should exclude "survived" for the same target
+    const root = game.currentRoot;
+    const withDied = game.zdd.require(root, diedVar);
+    const withDiedAndSurvived = game.zdd.require(withDied, survivedVar);
+    expect(withDiedAndSurvived).toBe(BOTTOM);
+  });
+
+  // Test 22: Day phase root has non-trivial ZDD when Slayer is active
+  it("Day phase has non-trivial ZDD root with Slayer variables", () => {
+    const { game } = buildGameThroughNight1(
+      "Slayer", "Chef", "Soldier", "Scarlet Woman", "Imp",
+    );
+
+    game.recordDay(null, { slayerShot: { slayerSeat: 0 } });
+
+    // Day phase root should NOT be TOP (has Slayer variables)
+    expect(game.currentRoot).not.toBe(TOP);
+    // Should have multiple worlds (one per legal target+outcome pair)
+    expect(game.zdd.count(game.currentRoot)).toBeGreaterThan(1);
+  });
+
+  // Test 23: Undo restores slayerUsed flag
+  it("undoing a day with Slayer shot restores slayerUsed", () => {
+    const { game } = buildGameThroughNight1(
+      "Slayer", "Chef", "Soldier", "Scarlet Woman", "Imp",
+    );
+
+    game.recordDay(null, { slayerShot: { slayerSeat: 0 } });
+    expect(game.slayerUsed).toBe(true);
+
+    game.undo();
+    expect(game.slayerUsed).toBe(false);
   });
 });

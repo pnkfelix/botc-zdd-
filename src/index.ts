@@ -76,4 +76,4 @@ export {
   type RavenkeeperTargetOutput,
   type RavenkeeperRoleOutput,
 } from "./night-action.js";
-export { Game, type DayResult, type GameOverResult, type SlayerShotResult } from "./game.js";
+export { Game, type DayResult, type GameOverResult, type SlayerShotOutput } from "./game.js";

@@ -52,6 +52,8 @@ export interface DayResult {
   scarletWomanPromotion?: Seat;
   /** Game-over result if the game ended this day, or undefined if it continues. */
   gameOver?: GameOverResult;
+  /** Slayer shot ZDD variable outputs (if Slayer shot occurred this day). */
+  slayerShotOutputs?: Map<number, SlayerShotOutput>;
 }
 
 /** Result of a game-over check. */
@@ -62,13 +64,11 @@ export interface GameOverResult {
   reason: string;
 }
 
-/** Result of a Slayer shot during the day phase. */
-export interface SlayerShotResult {
-  /** The Slayer's seat. */
-  slayerSeat: Seat;
+/** Describes a Slayer shot ZDD variable (one legal (target, outcome) pair). */
+export interface SlayerShotOutput {
   /** The target seat. */
   targetSeat: Seat;
-  /** Whether the target died. */
+  /** Whether the target died in this outcome. */
   targetDied: boolean;
 }
 
@@ -467,14 +467,30 @@ export class Game {
   /**
    * Record a Day phase (execution and/or other deaths).
    *
-   * This is a state transition, not a ZDD branching phase. The Day phase
-   * has zero ZDD variables — its root is TOP (trivial single-empty-set family).
+   * When no Slayer shot is specified, the Day phase has zero ZDD variables
+   * and root = TOP. When a Slayer shot is specified, the Day phase builds a
+   * ZDD of all legal (target, outcome) pairs, with one variable per pair.
    *
    * @param executedSeat - The seat that was executed, or null if no execution.
-   * @param otherDeaths - Other seats that died during the day (Virgin trigger, Slayer, etc.).
+   * @param otherDeathsOrOpts - Either a Seat[] of other deaths, or an options
+   *   object with `otherDeaths` and/or `slayerShot`.
    * @returns The DayResult.
    */
-  recordDay(executedSeat: Seat | null, otherDeaths: Seat[] = []): DayResult {
+  recordDay(
+    executedSeat: Seat | null,
+    otherDeathsOrOpts?: Seat[] | { otherDeaths?: Seat[]; slayerShot?: { slayerSeat: Seat } },
+  ): DayResult {
+    // Parse overloaded parameter
+    let otherDeaths: Seat[];
+    let slayerShot: { slayerSeat: Seat } | undefined;
+    if (Array.isArray(otherDeathsOrOpts)) {
+      otherDeaths = otherDeathsOrOpts;
+    } else if (otherDeathsOrOpts) {
+      otherDeaths = otherDeathsOrOpts.otherDeaths ?? [];
+      slayerShot = otherDeathsOrOpts.slayerShot;
+    } else {
+      otherDeaths = [];
+    }
     // Validate executed seat is alive
     if (executedSeat !== null && this._deadSeats.has(executedSeat)) {
       throw new Error(`Seat ${executedSeat} is already dead and cannot be executed`);
@@ -545,17 +561,82 @@ export class Game {
       }
     }
 
+    // --- Slayer shot ZDD ---
+    let dayRoot: NodeId = TOP;
+    let dayVarCount = 0;
+
+    if (slayerShot) {
+      if (!this._seatAssignment) {
+        throw new Error("No seat assignment (build seat assignment first)");
+      }
+      if (this._deadSeats.has(slayerShot.slayerSeat)) {
+        throw new Error(`Slayer (seat ${slayerShot.slayerSeat}) is dead and cannot use ability`);
+      }
+      if (this._slayerUsed) {
+        throw new Error("Slayer ability has already been used");
+      }
+      const slayerRole = this._seatAssignment.get(slayerShot.slayerSeat);
+      if (slayerRole !== "Slayer") {
+        throw new Error(`Seat ${slayerShot.slayerSeat} is ${slayerRole}, not Slayer`);
+      }
+
+      this._slayerUsed = true;
+
+      const malf = this._malfunctioningSeats ?? new Set<Seat>();
+      const slayerFunctioning = !malf.has(slayerShot.slayerSeat);
+      const slayerShotOutputs = new Map<number, SlayerShotOutput>();
+      let vid = 0;
+
+      // Build variables for each legal (target, outcome) pair
+      for (let target = 0; target < this.playerCount; target++) {
+        if (this._deadSeats.has(target)) continue; // can't target dead
+
+        const targetRole = this._seatAssignment.get(target);
+        const targetRoleObj = targetRole
+          ? this.script.roles.find((r) => r.name === targetRole)
+          : undefined;
+        const targetIsDemon = targetRoleObj?.type === RoleType.Demon;
+        const targetCanRegisterAsDemon =
+          targetRoleObj?.registersAs?.roleTypes.includes(RoleType.Demon) === true;
+
+        if (slayerFunctioning && targetIsDemon) {
+          // Actual Demon: must die
+          slayerShotOutputs.set(vid, { targetSeat: target, targetDied: true });
+          vid++;
+        } else if (slayerFunctioning && targetCanRegisterAsDemon) {
+          // Recluse-like: ST decides — both outcomes are legal
+          slayerShotOutputs.set(vid, { targetSeat: target, targetDied: true });
+          vid++;
+          slayerShotOutputs.set(vid, { targetSeat: target, targetDied: false });
+          vid++;
+        } else {
+          // Non-Demon (or malfunctioning Slayer): target survives
+          slayerShotOutputs.set(vid, { targetSeat: target, targetDied: false });
+          vid++;
+        }
+      }
+
+      dayVarCount = vid;
+      dayResult.slayerShotOutputs = slayerShotOutputs;
+
+      // Build ZDD: family of exactly-one-of-N singletons
+      if (vid > 0) {
+        const varIds = [...slayerShotOutputs.keys()];
+        dayRoot = this._buildExactlyOne(varIds);
+      }
+    }
+
     this._dayResults.push(dayResult);
 
-    // Push a phase with PhaseType.DayAction, zero ZDD variables, root = TOP
+    // Push a phase with PhaseType.DayAction
     this.phases.push({
       info: {
         type: PhaseType.DayAction,
         label: `Day ${dayNumber}`,
         variableOffset: this.phases.reduce((sum, p) => sum + p.info.variableCount, 0),
-        variableCount: 0,
+        variableCount: dayVarCount,
       },
-      root: TOP,
+      root: dayRoot,
       dayResult,
       previousDeadSeats,
     });
@@ -579,82 +660,26 @@ export class Game {
   }
 
   // -----------------------------------------------------------------------
-  // Slayer Ability
+  // Slayer Shot Lookup
   // -----------------------------------------------------------------------
 
   /**
-   * Use the Slayer's once-per-game Day ability.
+   * Find the variable ID for a specific Slayer shot (target, outcome) pair
+   * in the most recent Day phase's ZDD.
    *
-   * The Slayer chooses a target; if the Slayer is functioning and the target
-   * registers as the Demon, the target dies.
-   *
-   * Registration: The target registers as Demon if they ARE the Demon, or if
-   * the ST decides a role with `registersAs` including Demon (e.g., Recluse)
-   * registers as such. Pass `targetRegistersAsDemon: true` to force this.
-   * By default, only actual Demons and roles whose `registersAs` includes
-   * Demon are considered (the ST is assumed to choose registration).
-   *
-   * @param slayerSeat - The seat of the Slayer.
-   * @param targetSeat - The seat the Slayer targets.
-   * @param opts - Optional: malfunctioningSeats override, targetRegistersAsDemon override.
-   * @returns The result of the shot.
+   * @param targetSeat - The target seat.
+   * @param targetDied - Whether the target died.
+   * @returns The variable ID, or undefined if no match.
    */
-  slayerShot(
-    slayerSeat: Seat,
-    targetSeat: Seat,
-    malfunctioningSeatsOrOpts?: Set<Seat> | { malfunctioningSeats?: Set<Seat>; targetRegistersAsDemon?: boolean },
-  ): SlayerShotResult {
-    if (!this._seatAssignment) {
-      throw new Error("No seat assignment (build seat assignment first)");
+  findSlayerShotVariable(targetSeat: Seat, targetDied: boolean): number | undefined {
+    const lastDay = this._dayResults[this._dayResults.length - 1];
+    if (!lastDay?.slayerShotOutputs) return undefined;
+    for (const [varId, output] of lastDay.slayerShotOutputs) {
+      if (output.targetSeat === targetSeat && output.targetDied === targetDied) {
+        return varId;
+      }
     }
-
-    if (this._deadSeats.has(slayerSeat)) {
-      throw new Error(`Slayer (seat ${slayerSeat}) is dead and cannot use ability`);
-    }
-
-    if (this._slayerUsed) {
-      throw new Error("Slayer ability has already been used");
-    }
-
-    const slayerRole = this._seatAssignment.get(slayerSeat);
-    if (slayerRole !== "Slayer") {
-      throw new Error(`Seat ${slayerSeat} is ${slayerRole}, not Slayer`);
-    }
-
-    this._slayerUsed = true;
-
-    // Parse opts: supports legacy Set<Seat> or new options object
-    let malf: Set<Seat>;
-    let targetRegOverride: boolean | undefined;
-    if (malfunctioningSeatsOrOpts instanceof Set) {
-      malf = malfunctioningSeatsOrOpts;
-    } else if (malfunctioningSeatsOrOpts) {
-      malf = malfunctioningSeatsOrOpts.malfunctioningSeats ?? this._malfunctioningSeats ?? new Set<Seat>();
-      targetRegOverride = malfunctioningSeatsOrOpts.targetRegistersAsDemon;
-    } else {
-      malf = this._malfunctioningSeats ?? new Set<Seat>();
-    }
-    const slayerFunctioning = !malf.has(slayerSeat);
-
-    const targetRole = this._seatAssignment.get(targetSeat);
-    const targetRoleObj = targetRole ? this.script.roles.find((r) => r.name === targetRole) : undefined;
-    const targetIsDemon = targetRoleObj?.type === RoleType.Demon;
-
-    // Determine if target registers as Demon:
-    // - Actual Demons always register as Demon.
-    // - Roles with registersAs including Demon (e.g., Recluse) CAN register as
-    //   Demon, but only if the ST decides (pass targetRegistersAsDemon: true).
-    //   By default, only actual Demons are killed.
-    const registersAsDemon = targetIsDemon || (targetRegOverride === true);
-
-    // Functioning Slayer kills if target registers as Demon
-    const targetDied = slayerFunctioning && registersAsDemon;
-
-    if (targetDied) {
-      this._deadSeats.add(targetSeat);
-    }
-
-    return { slayerSeat, targetSeat, targetDied };
+    return undefined;
   }
 
   /**
@@ -662,6 +687,23 @@ export class Game {
    */
   get slayerUsed(): boolean {
     return this._slayerUsed;
+  }
+
+  // -----------------------------------------------------------------------
+  // Private helpers
+  // -----------------------------------------------------------------------
+
+  /**
+   * Build a ZDD family of exactly-one-of-N singletons: { {v1}, {v2}, …, {vN} }.
+   */
+  private _buildExactlyOne(vars: number[]): NodeId {
+    if (vars.length === 0) return BOTTOM;
+    const sorted = [...vars].sort((a, b) => a - b);
+    let result: NodeId = BOTTOM;
+    for (let i = sorted.length - 1; i >= 0; i--) {
+      result = this.zdd.getNode(sorted[i], result, TOP);
+    }
+    return result;
   }
 
   // -----------------------------------------------------------------------
@@ -709,6 +751,10 @@ export class Game {
       // Reverse Scarlet Woman promotion if it occurred
       if (popped.dayResult?.scarletWomanPromotion !== undefined && this._seatAssignment) {
         this._seatAssignment.set(popped.dayResult.scarletWomanPromotion, "Scarlet Woman");
+      }
+      // Reverse Slayer used flag if this day had a Slayer shot
+      if (popped.dayResult?.slayerShotOutputs) {
+        this._slayerUsed = false;
       }
       this._deadSeats = new Set(popped.previousDeadSeats);
       this._dayResults.pop();
