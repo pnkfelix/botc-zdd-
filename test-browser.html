@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>botc-zdd Browser Smoke Test</title>
+  <style>
+    body { font-family: monospace; padding: 2em; background: #1a1a2e; color: #e0e0e0; }
+    h1 { color: #c9a0dc; }
+    .log { margin: 0.3em 0; }
+    .pass { color: #4ade80; }
+    .fail { color: #f87171; }
+    .info { color: #93c5fd; }
+    pre { background: #16213e; padding: 1em; border-radius: 8px; overflow-x: auto; }
+  </style>
+</head>
+<body>
+  <h1>botc-zdd Browser Smoke Test</h1>
+  <div id="output"></div>
+
+  <script type="module">
+    import {
+      TROUBLE_BREWING,
+      Game,
+      GameObserver,
+    } from "./dist/botc-zdd.esm.js";
+
+    const out = document.getElementById("output");
+
+    function log(msg, cls = "info") {
+      const div = document.createElement("div");
+      div.className = `log ${cls}`;
+      div.textContent = msg;
+      out.appendChild(div);
+    }
+
+    function assert(condition, msg) {
+      if (condition) {
+        log(`PASS: ${msg}`, "pass");
+      } else {
+        log(`FAIL: ${msg}`, "fail");
+      }
+    }
+
+    try {
+      // ---------------------------------------------------------------
+      // 5-player Trouble Brewing: Washerwoman, Chef, Empath, Poisoner, Imp
+      // Seats:  0=Washerwoman, 1=Chef, 2=Empath, 3=Poisoner, 4=Imp
+      // ---------------------------------------------------------------
+      const roles = ["Washerwoman", "Chef", "Empath", "Poisoner", "Imp"];
+      const game = new Game(TROUBLE_BREWING, 5);
+      game.buildDistribution();
+
+      // Find and select the matching distribution
+      const dists = game.zdd.enumerate(game.currentRoot);
+      const roleNames = TROUBLE_BREWING.roles.map(r => r.name);
+      const targetSet = new Set(roles);
+
+      let matchedDist;
+      for (const dist of dists) {
+        const distRoles = dist.map(v => roleNames[v]);
+        if (
+          distRoles.length === roles.length &&
+          distRoles.every(r => targetSet.has(r)) &&
+          roles.every(r => distRoles.includes(r))
+        ) {
+          matchedDist = dist;
+          break;
+        }
+      }
+
+      game.buildSeatAssignment(matchedDist);
+
+      const seatRoles = new Map();
+      roles.forEach((r, i) => seatRoles.set(i, r));
+      game.buildNightInfo(seatRoles);
+
+      const observer = new GameObserver(game);
+
+      // ---------------------------------------------------------------
+      // World count BEFORE observation
+      // ---------------------------------------------------------------
+      const worldsBefore = observer.worldCount();
+      log(`World count before observation: ${worldsBefore}`);
+      assert(worldsBefore > 0, "World count is positive before observation");
+
+      // ---------------------------------------------------------------
+      // Observe: Washerwoman shown seats 1 and 2, told one is Chef
+      // ---------------------------------------------------------------
+      log("Observing: Washerwoman shown seats 1,2 — one is the Chef");
+      observer.observePairInfo("Washerwoman", 1, 2, "Chef");
+
+      const worldsAfter = observer.worldCount();
+      log(`World count after WW observation: ${worldsAfter}`);
+      assert(worldsAfter < worldsBefore, "World count decreased after observation");
+      assert(worldsAfter > 0, "World count still positive");
+
+      // ---------------------------------------------------------------
+      // Query possible Chef counts
+      // ---------------------------------------------------------------
+      const chefValues = observer.possibleValues("Chef", 1);
+      log(`Chef possible values: ${chefValues.length} entries`);
+      for (const entry of chefValues) {
+        log(`  count=${entry.value.count}, worlds=${entry.worldCount}`);
+      }
+      const chefSum = chefValues.reduce((a, v) => a + v.worldCount, 0);
+      assert(chefSum === worldsAfter, `Chef value world counts sum to total (${chefSum} = ${worldsAfter})`);
+
+      // ---------------------------------------------------------------
+      // Undo and verify
+      // ---------------------------------------------------------------
+      observer.undo();
+      const worldsAfterUndo = observer.worldCount();
+      assert(worldsAfterUndo === worldsBefore, `Undo restored world count (${worldsAfterUndo} = ${worldsBefore})`);
+
+      log("");
+      log("Smoke test complete!", "pass");
+
+    } catch (err) {
+      log(`ERROR: ${err.message}`, "fail");
+      log(err.stack, "fail");
+    }
+  </script>
+</body>
+</html>
