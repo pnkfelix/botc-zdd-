@@ -588,12 +588,22 @@ export class Game {
    * The Slayer chooses a target; if the Slayer is functioning and the target
    * registers as the Demon, the target dies.
    *
+   * Registration: The target registers as Demon if they ARE the Demon, or if
+   * the ST decides a role with `registersAs` including Demon (e.g., Recluse)
+   * registers as such. Pass `targetRegistersAsDemon: true` to force this.
+   * By default, only actual Demons and roles whose `registersAs` includes
+   * Demon are considered (the ST is assumed to choose registration).
+   *
    * @param slayerSeat - The seat of the Slayer.
    * @param targetSeat - The seat the Slayer targets.
-   * @param malfunctioningSeats - Optional override for malfunctioning seats.
+   * @param opts - Optional: malfunctioningSeats override, targetRegistersAsDemon override.
    * @returns The result of the shot.
    */
-  slayerShot(slayerSeat: Seat, targetSeat: Seat, malfunctioningSeats?: Set<Seat>): SlayerShotResult {
+  slayerShot(
+    slayerSeat: Seat,
+    targetSeat: Seat,
+    malfunctioningSeatsOrOpts?: Set<Seat> | { malfunctioningSeats?: Set<Seat>; targetRegistersAsDemon?: boolean },
+  ): SlayerShotResult {
     if (!this._seatAssignment) {
       throw new Error("No seat assignment (build seat assignment first)");
     }
@@ -613,15 +623,32 @@ export class Game {
 
     this._slayerUsed = true;
 
-    const malf = malfunctioningSeats ?? this._malfunctioningSeats ?? new Set<Seat>();
+    // Parse opts: supports legacy Set<Seat> or new options object
+    let malf: Set<Seat>;
+    let targetRegOverride: boolean | undefined;
+    if (malfunctioningSeatsOrOpts instanceof Set) {
+      malf = malfunctioningSeatsOrOpts;
+    } else if (malfunctioningSeatsOrOpts) {
+      malf = malfunctioningSeatsOrOpts.malfunctioningSeats ?? this._malfunctioningSeats ?? new Set<Seat>();
+      targetRegOverride = malfunctioningSeatsOrOpts.targetRegistersAsDemon;
+    } else {
+      malf = this._malfunctioningSeats ?? new Set<Seat>();
+    }
     const slayerFunctioning = !malf.has(slayerSeat);
 
     const targetRole = this._seatAssignment.get(targetSeat);
     const targetRoleObj = targetRole ? this.script.roles.find((r) => r.name === targetRole) : undefined;
     const targetIsDemon = targetRoleObj?.type === RoleType.Demon;
 
-    // Functioning Slayer kills the Demon
-    const targetDied = slayerFunctioning && targetIsDemon;
+    // Determine if target registers as Demon:
+    // - Actual Demons always register as Demon.
+    // - Roles with registersAs including Demon (e.g., Recluse) CAN register as
+    //   Demon, but only if the ST decides (pass targetRegistersAsDemon: true).
+    //   By default, only actual Demons are killed.
+    const registersAsDemon = targetIsDemon || (targetRegOverride === true);
+
+    // Functioning Slayer kills if target registers as Demon
+    const targetDied = slayerFunctioning && registersAsDemon;
 
     if (targetDied) {
       this._deadSeats.add(targetSeat);

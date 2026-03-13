@@ -596,4 +596,27 @@ describe("Slayer", () => {
     const result = game.slayerShot(0, 4); // Slayer shoots Imp but malfunctioning
     expect(result.targetDied).toBe(false);
   });
+
+  // Test 21: Slayer shoots Recluse — default (no registration) → no kill
+  it("Slayer shooting Recluse without registration override does not kill", () => {
+    // 6 players: 0=Slayer, 1=Chef, 2=Recluse, 3=Scarlet Woman, 4=Soldier, 5=Imp
+    const { game } = buildGameThroughNight1(
+      "Slayer", "Chef", "Recluse", "Scarlet Woman", "Soldier", "Imp",
+    );
+
+    const result = game.slayerShot(0, 2); // Slayer shoots Recluse
+    expect(result.targetDied).toBe(false);
+    expect(game.deadSeats.has(2)).toBe(false);
+  });
+
+  // Test 22: Slayer shoots Recluse with targetRegistersAsDemon → kill
+  it("Slayer kills Recluse when ST decides Recluse registers as Demon", () => {
+    const { game } = buildGameThroughNight1(
+      "Slayer", "Chef", "Recluse", "Scarlet Woman", "Soldier", "Imp",
+    );
+
+    const result = game.slayerShot(0, 2, { targetRegistersAsDemon: true });
+    expect(result.targetDied).toBe(true);
+    expect(game.deadSeats.has(2)).toBe(true);
+  });
 });
