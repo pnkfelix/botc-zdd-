@@ -6,6 +6,7 @@ import {
   findImpTargetVariable,
   findMonkTargetVariable,
   findPoisonerN2TargetVariable,
+  findStarpassRecipientVariable,
   findRavenkeeperTargetVariable,
   findRavenkeeperRoleVariable,
   findEmpathN2Variable,
@@ -340,6 +341,77 @@ describe("Scarlet Woman", () => {
 
     expect(dayResult.executedRole).toBe("Imp");
     expect(dayResult.scarletWomanPromotion).toBeUndefined();
+  });
+
+  // Test 11: Functioning SW has starpass precedence over other minions
+  it("functioning SW is the mandatory starpass recipient", () => {
+    // 7 players: 0=Chef, 1=Empath, 2=Soldier, 3=Scarlet Woman, 4=Poisoner, 5=Butler, 6=Imp
+    // Two living minions: SW (seat 3) and Poisoner (seat 4).
+    // When Imp starpasses, functioning SW must be the only recipient.
+    const seatRoles = makeSeatRoles(
+      "Chef", "Empath", "Soldier", "Scarlet Woman", "Poisoner", "Butler", "Imp",
+    );
+    const zdd = new ZDD();
+    const config = makeConfig(seatRoles);
+    const result = buildNightActionZDD(zdd, config);
+
+    // Imp self-targets (starpass)
+    const impSelf = findImpTargetVariable(result, 6)!;
+    expect(impSelf).toBeDefined();
+    let root = zdd.require(result.root, impSelf);
+    expect(zdd.count(root)).toBeGreaterThan(0);
+
+    // SW (seat 3) should be a valid starpass recipient
+    const spSW = findStarpassRecipientVariable(result, 3);
+    expect(spSW).toBeDefined();
+
+    // Poisoner (seat 4) should also have a variable allocated...
+    const spPoisoner = findStarpassRecipientVariable(result, 4);
+    expect(spPoisoner).toBeDefined();
+
+    // But requiring Poisoner as recipient should yield BOTTOM in branches
+    // where SW is functioning (i.e., not poisoned by the Poisoner targeting herself).
+    // When Poisoner targets someone other than SW, SW is functioning → only SW is valid.
+    // Require Poisoner targets seat 0 (Chef) — SW is NOT poisoned → SW must be recipient
+    const poisonerTargetChef = findPoisonerN2TargetVariable(result, 0)!;
+    let branch = zdd.require(root, poisonerTargetChef);
+
+    // SW must be the recipient
+    let withSW = zdd.require(branch, spSW!);
+    expect(zdd.count(withSW)).toBeGreaterThan(0);
+
+    // Poisoner as recipient should be impossible when SW is functioning
+    let withPoisoner = zdd.require(branch, spPoisoner!);
+    expect(withPoisoner).toBe(BOTTOM);
+  });
+
+  // Test 12: Poisoned SW loses starpass precedence
+  it("poisoned SW does not have starpass precedence", () => {
+    // 7 players: 0=Chef, 1=Empath, 2=Soldier, 3=Scarlet Woman, 4=Poisoner, 5=Butler, 6=Imp
+    const seatRoles = makeSeatRoles(
+      "Chef", "Empath", "Soldier", "Scarlet Woman", "Poisoner", "Butler", "Imp",
+    );
+    const zdd = new ZDD();
+    const config = makeConfig(seatRoles);
+    const result = buildNightActionZDD(zdd, config);
+
+    // Imp self-targets (starpass)
+    const impSelf = findImpTargetVariable(result, 6)!;
+    let root = zdd.require(result.root, impSelf);
+
+    // Poisoner targets SW (seat 3) → SW is malfunctioning → no precedence
+    const poisonerTargetSW = findPoisonerN2TargetVariable(result, 3)!;
+    let branch = zdd.require(root, poisonerTargetSW);
+
+    // Both SW and Poisoner should be valid recipients
+    const spSW = findStarpassRecipientVariable(result, 3)!;
+    const spPoisoner = findStarpassRecipientVariable(result, 4)!;
+
+    let withSW = zdd.require(branch, spSW);
+    expect(zdd.count(withSW)).toBeGreaterThan(0);
+
+    let withPoisoner = zdd.require(branch, spPoisoner);
+    expect(zdd.count(withPoisoner)).toBeGreaterThan(0);
   });
 });
 

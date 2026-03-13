@@ -669,8 +669,27 @@ export function buildNightActionZDD(
 
         // Handle starpass sub-branches
         if (isStarpass && impFunctioning) {
-          // Starpass: need to pick a recipient
-          for (const spVarId of starpassVarIds) {
+          // Starpass: determine recipient(s).
+          // RAW: if a functioning (sober+healthy) Scarlet Woman exists, she MUST
+          // become the new Imp — no choice among minions.
+          let eligibleStarpassVarIds: number[];
+
+          // Check for a functioning SW among starpass recipients
+          const swRecipientVarId = starpassVarIds.find((spVid) => {
+            const recipientSeat = starpassRecipientOutputs.get(spVid)!.recipientSeat;
+            const recipientRole = seatRoles.get(recipientSeat);
+            return recipientRole === "Scarlet Woman" && !n2Malfunctioning.has(recipientSeat);
+          });
+
+          if (swRecipientVarId !== undefined) {
+            // Functioning SW exists → she is the only valid recipient
+            eligibleStarpassVarIds = [swRecipientVarId];
+          } else {
+            // No functioning SW → any living minion is eligible
+            eligibleStarpassVarIds = starpassVarIds;
+          }
+
+          for (const spVarId of eligibleStarpassVarIds) {
             const recipient = starpassRecipientOutputs.get(spVarId)!.recipientSeat;
 
             // After starpass, the recipient is the new demon for FT purposes
