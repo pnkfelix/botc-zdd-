@@ -71,5 +71,9 @@ export {
   type EmpathN2Output,
   type FortuneTellerN2Output,
   type UndertakerOutput,
+  findRavenkeeperTargetVariable,
+  findRavenkeeperRoleVariable,
+  type RavenkeeperTargetOutput,
+  type RavenkeeperRoleOutput,
 } from "./night-action.js";
-export { Game, type DayResult } from "./game.js";
+export { Game, type DayResult, type GameOverResult, type SlayerShotResult } from "./game.js";

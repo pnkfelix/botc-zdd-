@@ -16,7 +16,7 @@ import {
   PhaseType,
   type PhaseInfo,
 } from "./types.js";
-import { buildDistributionZDD, buildDistributionZDDWithModifiers, resolveRoles } from "./botc.js";
+import { RoleType, buildDistributionZDD, buildDistributionZDDWithModifiers, resolveRoles } from "./botc.js";
 import { buildSeatAssignmentZDD } from "./seats.js";
 import { applyObservation, applyObservations, executeQuery } from "./constraints.js";
 import {
@@ -48,6 +48,28 @@ export interface DayResult {
   otherDeaths: Seat[];
   /** Cumulative set of all dead seats after this day. */
   deadSeats: Set<Seat>;
+  /** If Scarlet Woman promotion occurred, the seat that became the new Imp. */
+  scarletWomanPromotion?: Seat;
+  /** Game-over result if the game ended this day, or undefined if it continues. */
+  gameOver?: GameOverResult;
+}
+
+/** Result of a game-over check. */
+export interface GameOverResult {
+  /** Which team won. */
+  winner: "Good" | "Evil";
+  /** Reason for the game ending. */
+  reason: string;
+}
+
+/** Result of a Slayer shot during the day phase. */
+export interface SlayerShotResult {
+  /** The Slayer's seat. */
+  slayerSeat: Seat;
+  /** The target seat. */
+  targetSeat: Seat;
+  /** Whether the target died. */
+  targetDied: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -85,6 +107,10 @@ export class Game {
   private _seatAssignment: Map<Seat, string> | undefined;
   /** Day results stored for later retrieval (e.g., Undertaker). */
   private _dayResults: DayResult[] = [];
+  /** Permanently malfunctioning seats (e.g., the Drunk), passed in from buildNightInfo/buildNightAction. */
+  private _malfunctioningSeats: Set<Seat> | undefined;
+  /** Tracks whether the Slayer has used their ability. */
+  private _slayerUsed = false;
 
   constructor(script: Script, playerCount: number) {
     this.zdd = new ZDD();
@@ -218,6 +244,11 @@ export class Game {
 
     // Store seat assignment for later use (e.g., Undertaker role lookup)
     this._seatAssignment = new Map(seatAssignment);
+
+    // Store malfunctioning seats for Saint check
+    if (malfunctioningSeats) {
+      this._malfunctioningSeats = new Set(malfunctioningSeats);
+    }
 
     const config: NightInfoConfig = {
       numPlayers: this.playerCount,
@@ -482,6 +513,38 @@ export class Game {
       deadSeats: new Set(this._deadSeats),
     };
 
+    // --- Saint check: if the executed player is a functioning Saint, evil wins ---
+    if (executedSeat !== null && executedRole === "Saint") {
+      const malfunctioning = this._malfunctioningSeats?.has(executedSeat) ?? false;
+      if (!malfunctioning) {
+        dayResult.gameOver = { winner: "Evil", reason: "Saint was executed" };
+      }
+    }
+
+    // --- Scarlet Woman promotion: if the Imp was executed and 5+ players remain alive ---
+    if (executedSeat !== null && executedRole !== null && this._seatAssignment) {
+      const executedRoleObj = this.script.roles.find((r) => r.name === executedRole);
+      if (executedRoleObj?.type === RoleType.Demon) {
+        // Count alive players (after this execution)
+        const aliveCount = this.playerCount - this._deadSeats.size;
+        if (aliveCount >= 5) {
+          // Find a living Scarlet Woman
+          let swSeat: Seat | undefined;
+          for (const [seat, role] of this._seatAssignment) {
+            if (role === "Scarlet Woman" && !this._deadSeats.has(seat)) {
+              swSeat = seat;
+              break;
+            }
+          }
+          if (swSeat !== undefined) {
+            // SW becomes the new Imp
+            this._seatAssignment.set(swSeat, "Imp");
+            dayResult.scarletWomanPromotion = swSeat;
+          }
+        }
+      }
+    }
+
     this._dayResults.push(dayResult);
 
     // Push a phase with PhaseType.DayAction, zero ZDD variables, root = TOP
@@ -515,6 +578,79 @@ export class Game {
     this._deadSeats.add(seat);
   }
 
+  // -----------------------------------------------------------------------
+  // Slayer Ability
+  // -----------------------------------------------------------------------
+
+  /**
+   * Use the Slayer's once-per-game Day ability.
+   *
+   * The Slayer chooses a target; if the Slayer is functioning and the target
+   * registers as the Demon, the target dies.
+   *
+   * @param slayerSeat - The seat of the Slayer.
+   * @param targetSeat - The seat the Slayer targets.
+   * @param malfunctioningSeats - Optional override for malfunctioning seats.
+   * @returns The result of the shot.
+   */
+  slayerShot(slayerSeat: Seat, targetSeat: Seat, malfunctioningSeats?: Set<Seat>): SlayerShotResult {
+    if (!this._seatAssignment) {
+      throw new Error("No seat assignment (build seat assignment first)");
+    }
+
+    if (this._deadSeats.has(slayerSeat)) {
+      throw new Error(`Slayer (seat ${slayerSeat}) is dead and cannot use ability`);
+    }
+
+    if (this._slayerUsed) {
+      throw new Error("Slayer ability has already been used");
+    }
+
+    const slayerRole = this._seatAssignment.get(slayerSeat);
+    if (slayerRole !== "Slayer") {
+      throw new Error(`Seat ${slayerSeat} is ${slayerRole}, not Slayer`);
+    }
+
+    this._slayerUsed = true;
+
+    const malf = malfunctioningSeats ?? this._malfunctioningSeats ?? new Set<Seat>();
+    const slayerFunctioning = !malf.has(slayerSeat);
+
+    const targetRole = this._seatAssignment.get(targetSeat);
+    const targetRoleObj = targetRole ? this.script.roles.find((r) => r.name === targetRole) : undefined;
+    const targetIsDemon = targetRoleObj?.type === RoleType.Demon;
+
+    // Functioning Slayer kills the Demon
+    const targetDied = slayerFunctioning && targetIsDemon;
+
+    if (targetDied) {
+      this._deadSeats.add(targetSeat);
+    }
+
+    return { slayerSeat, targetSeat, targetDied };
+  }
+
+  /**
+   * Check if the Slayer ability has been used.
+   */
+  get slayerUsed(): boolean {
+    return this._slayerUsed;
+  }
+
+  // -----------------------------------------------------------------------
+  // Game-over check
+  // -----------------------------------------------------------------------
+
+  /**
+   * Check if the game has ended based on the most recent DayResult.
+   *
+   * Returns the GameOverResult from the last day, or undefined if the game continues.
+   */
+  checkGameOver(): GameOverResult | undefined {
+    const lastDay = this._dayResults[this._dayResults.length - 1];
+    return lastDay?.gameOver;
+  }
+
   /**
    * Get the most recent DayResult, or undefined if no days recorded.
    */
@@ -541,8 +677,12 @@ export class Game {
     const popped = this.phases.pop();
     if (!popped) return undefined;
 
-    // If undoing a Day phase, restore the dead set
+    // If undoing a Day phase, restore the dead set and reverse SW promotion
     if (popped.info.type === PhaseType.DayAction && popped.previousDeadSeats) {
+      // Reverse Scarlet Woman promotion if it occurred
+      if (popped.dayResult?.scarletWomanPromotion !== undefined && this._seatAssignment) {
+        this._seatAssignment.set(popped.dayResult.scarletWomanPromotion, "Scarlet Woman");
+      }
       this._deadSeats = new Set(popped.previousDeadSeats);
       this._dayResults.pop();
     }
