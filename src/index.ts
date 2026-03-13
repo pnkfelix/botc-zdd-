@@ -77,3 +77,13 @@ export {
   type RavenkeeperRoleOutput,
 } from "./night-action.js";
 export { Game, type DayResult, type GameOverResult, type SlayerShotOutput } from "./game.js";
+export {
+  GameObserver,
+  type PairInfoValue,
+  type CountInfoValue,
+  type FortuneTellerValue,
+  type UndertakerValue,
+  type RavenkeeperValue,
+  type LibrarianNoOutsidersValue,
+  type PossibleValueEntry,
+} from "./observer.js";
